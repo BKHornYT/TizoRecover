@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.img
+*.tzscan
+.venv/
+recovered/
+CLAUDE.md
+task.md
+changes.md
+PLAN.md

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TizoRecover</title>
+<link rel="icon" href="logo.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><img src="logo.svg" alt=""><span><b>Tizo</b>Recover</span><span class="ver" id="ver"></span></div>
+  <div class="top-right">
+    <span id="admin-chip"></span>
+    <button class="icon-btn" id="theme" title="Light / dark"></button>
+  </div>
+</header>
+
+<div class="banner" id="admin-banner" hidden>
+  <span data-icon="shield"></span>
+  <span class="grow">Not running as administrator. USB sticks and memory cards usually work anyway, but internal drives need administrator rights: deleted files only exist in a drive's raw bytes, and Windows guards those.</span>
+  <button class="btn primary" id="elevate">Restart as administrator</button>
+</div>
+
+<main class="screen" id="screen-drives">
+  <div class="picker">
+    <section class="hero">
+      <h1>Find deleted files</h1>
+      <p>Pick the drive they were on. Nothing is ever written to it: TizoRecover only reads.</p>
+    </section>
+    <div id="drive-sections"><div class="empty-drives"><span class="spinner"></span> Looking for drives…</div></div>
+    <div class="picker-tools">
+      <button class="btn ghost" id="open-image"><span data-icon="disc"></span>Open a disk image…</button>
+      <button class="btn ghost" id="refresh"><span data-icon="refresh"></span>Refresh</button>
+    </div>
+    <section class="explain">
+      <div>
+        <h3><span data-icon="bolt"></span>Quick scan</h3>
+        <p>Reads the drive's own file table. Takes seconds to minutes, and finds deleted files with their real names and folders, as long as the table still remembers them.</p>
+      </div>
+      <div>
+        <h3><span data-icon="layers"></span>Deep scan</h3>
+        <p>Does a quick scan, then reads every free byte and recognises files by their contents. Slower (minutes per 10 GB), but finds photos, videos and documents even after a format. Names are lost for those.</p>
+      </div>
+    </section>
+  </div>
+</main>
+
+<main class="screen" id="screen-results" hidden>
+  <div class="scanbar">
+    <button class="icon-btn" id="back" title="Back to drives"><span data-icon="back"></span></button>
+    <div class="scan-info">
+      <div class="scan-title"><b id="scan-drive"></b><span id="scan-mode"></span></div>
+      <div class="progress" id="scan-progress"><div></div></div>
+      <div class="scan-stage" id="scan-stage"></div>
+    </div>
+    <div class="counts" id="scan-counts"></div>
+    <button class="btn danger" id="stop"><span data-icon="stop"></span>Stop</button>
+    <button class="btn secondary" id="go-deep" hidden><span data-icon="layers"></span>Run deep scan</button>
+  </div>
+
+  <div class="workspace">
+    <aside class="sidebar">
+      <div class="search"><span data-icon="search"></span><input id="q" type="search" placeholder="Search names and folders" autocomplete="off"></div>
+      <div class="side-group">
+        <h4>Show</h4>
+        <div id="status-filters"></div>
+      </div>
+      <div class="side-group">
+        <h4>File types</h4>
+        <div id="cat-filters"></div>
+      </div>
+      <div class="side-group">
+        <h4>Folders</h4>
+        <div class="tree" id="tree"></div>
+      </div>
+    </aside>
+
+    <section class="listpane">
+      <div class="list-tools">
+        <div class="crumbs" id="crumbs"></div>
+        <div class="seg" id="view-seg">
+          <button data-view="list" class="active" title="List"><span data-icon="list"></span></button>
+          <button data-view="grid" title="Thumbnails"><span data-icon="grid"></span></button>
+        </div>
+      </div>
+      <div class="thead" id="thead">
+        <div><input type="checkbox" class="check" id="check-all" title="Select all shown"></div>
+        <div class="sortable" data-sort="name">Name</div>
+        <div class="sortable" data-sort="folder">Folder</div>
+        <div class="sortable num" data-sort="size">Size</div>
+        <div class="sortable" data-sort="modified">Modified</div>
+        <div class="sortable" data-sort="status">Status</div>
+      </div>
+      <div class="viewport" id="viewport"><div class="spacer" id="spacer"></div><div class="empty" id="empty" hidden></div></div>
+    </section>
+
+    <aside class="preview" id="preview">
+      <div class="preview-empty" id="pv-empty"><div><span data-icon="eye"></span><div>Click a file to preview it</div></div></div>
+      <div id="pv" hidden style="display:flex;flex-direction:column;min-height:0;flex:1">
+        <div class="pv-head"><div class="pv-name" id="pv-name"></div><div class="pv-path" id="pv-path"></div></div>
+        <div class="pv-tabs" id="pv-tabs">
+          <button data-tab="preview" class="active">Preview</button>
+          <button data-tab="info">Details</button>
+          <button data-tab="hex">Hex</button>
+        </div>
+        <div class="pv-body" id="pv-body"></div>
+        <div class="pv-actions"><button class="btn primary" id="pv-save"><span data-icon="download"></span>Recover this file</button></div>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="actionbar">
+    <span class="sel" id="sel-info"></span>
+    <button class="btn ghost" id="select-good" title="Select every file marked good that is shown">Select all good</button>
+    <button class="btn ghost" id="select-none">Clear</button>
+    <span class="grow"></span>
+    <button class="btn primary" id="recover-btn" disabled><span data-icon="download"></span>Recover selected</button>
+  </footer>
+</main>
+
+<dialog id="recover-dialog">
+  <div class="dlg-head"><h2 id="rd-title">Recover files</h2><p id="rd-sub"></p></div>
+  <div class="dlg-body" id="rd-form">
+    <div>Save to</div>
+    <div class="field"><input id="rd-dest" placeholder="A folder on another drive"><button class="btn" id="rd-browse">Browse…</button></div>
+    <div id="rd-msg"></div>
+    <label class="opt"><input type="checkbox" class="check" id="rd-keep" checked> Keep the original folders</label>
+  </div>
+  <div class="dlg-body" id="rd-progress" hidden>
+    <div class="progress"><div id="rd-bar"></div></div>
+    <div id="rd-status" class="scan-stage"></div>
+    <div id="rd-result"></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn ghost" id="rd-cancel">Cancel</button>
+    <button class="btn" id="rd-open" hidden><span data-icon="folder"></span>Open folder</button>
+    <button class="btn primary" id="rd-start">Recover</button>
+  </div>
+</dialog>
+
+<dialog id="erase-dialog" class="danger-dialog">
+  <div class="dlg-head"><h2 id="ed-title">Erase drive</h2><p id="ed-sub"></p></div>
+  <div class="dlg-body" id="ed-form">
+    <div class="msg bad"><b>Everything on this drive will be destroyed for good.</b> All files, all partitions, and anything TizoRecover could have recovered. There is no undo, and no tool, TizoRecover included, can bring it back.</div>
+    <div id="ed-volumes" class="ed-volumes"></div>
+    <div class="ed-grid">
+      <div>
+        <div class="ed-label">How</div>
+        <label class="opt"><input type="radio" name="ed-method" value="zeros" checked> Overwrite with zeros (one pass, recommended)</label>
+        <label class="opt"><input type="radio" name="ed-method" value="random"> Random data, then zeros (two passes, twice as long)</label>
+      </div>
+      <div>
+        <div class="ed-label">Afterwards</div>
+        <label class="opt"><input type="radio" name="ed-fs" value="exfat" checked> Format as exFAT (works everywhere)</label>
+        <label class="opt"><input type="radio" name="ed-fs" value="ntfs"> Format as NTFS (Windows)</label>
+        <label class="opt"><input type="radio" name="ed-fs" value=""> Leave it empty</label>
+      </div>
+    </div>
+    <div class="field"><span class="ed-label" style="align-self:center">Name</span><input id="ed-label" value="USB" maxlength="11"></div>
+    <div class="msg info" style="font-size:12.5px">USB sticks, memory cards and SSDs keep a few spare blocks that only their own chip can reach. An overwrite gets everything a computer can see, which stops every recovery tool, but not a forensic lab with the chip on a bench.</div>
+    <div id="ed-admin"></div>
+    <div>
+      <div class="ed-label">To confirm, type <b id="ed-phrase" class="ed-phrase"></b></div>
+      <div class="field"><input id="ed-typed" autocomplete="off" spellcheck="false"></div>
+    </div>
+    <label class="opt"><input type="checkbox" class="check" id="ed-understood"> I understand that everything on this drive will be gone and cannot be recovered.</label>
+    <div id="ed-msg"></div>
+  </div>
+  <div class="dlg-body" id="ed-progress" hidden>
+    <div class="progress"><div id="ed-bar"></div></div>
+    <div id="ed-status" class="scan-stage"></div>
+    <div id="ed-result"></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn ghost" id="ed-cancel">Cancel</button>
+    <button class="btn erase" id="ed-start" disabled>Erase drive</button>
+  </div>
+</dialog>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>
