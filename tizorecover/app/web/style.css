@@ -374,3 +374,8 @@ label.opt { display: flex; align-items: center; gap: 8px; color: var(--text); }
 @media (max-width: 700px) { .ed-grid { grid-template-columns: 1fr; } }
 .ed-volumes svg { width: 14px; height: 14px; vertical-align: -2px; color: var(--accent); }
 dialog { max-height: calc(100vh - 32px); overflow-y: auto; }
+
+.banner.update { background: var(--accent2-soft); }
+.banner.update svg { color: var(--accent2); }
+.ed-time { color: var(--accent2); font-size: 12px; font-weight: 600; }
+.ed-hint { color: var(--muted); font-size: 12px; }

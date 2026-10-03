@@ -22,6 +22,13 @@
   <button class="btn primary" id="elevate">Restart as administrator</button>
 </div>
 
+<div class="banner update" id="update-banner" hidden>
+  <span data-icon="sparkle"></span>
+  <span class="grow" id="update-text"></span>
+  <button class="btn primary" id="update-btn"></button>
+  <button class="icon-btn" id="update-close" title="Not now">×</button>
+</div>
+
 <main class="screen" id="screen-drives">
   <div class="picker">
     <section class="hero">
@@ -147,8 +154,9 @@
     <div class="ed-grid">
       <div>
         <div class="ed-label">How</div>
-        <label class="opt"><input type="radio" name="ed-method" value="zeros" checked> Overwrite with zeros (one pass, recommended)</label>
-        <label class="opt"><input type="radio" name="ed-method" value="random"> Random data, then zeros (two passes, twice as long)</label>
+        <label class="opt"><input type="radio" name="ed-method" value="quick" checked><span><b>Quick erase</b> <span class="ed-time" data-est="quick"></span><br><span class="ed-hint">Removes all files, names and folders. Contents could still be found by a deep scan.</span></span></label>
+        <label class="opt"><input type="radio" name="ed-method" value="zeros"><span><b>Full erase</b> <span class="ed-time" data-est="zeros"></span><br><span class="ed-hint">Overwrites every byte. Nothing can be recovered. Blank areas are skipped, so it is often faster.</span></span></label>
+        <label class="opt"><input type="radio" name="ed-method" value="random"><span><b>Full, two passes</b> <span class="ed-time" data-est="random"></span><br><span class="ed-hint">Random data, then zeros.</span></span></label>
       </div>
       <div>
         <div class="ed-label">Afterwards</div>

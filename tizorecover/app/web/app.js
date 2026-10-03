@@ -135,6 +135,41 @@ async function init() {
   }
   loadDrives(false);
   setInterval(() => api("/api/ping").catch(() => {}), 10000);
+  setTimeout(checkUpdate, 1500);
+}
+
+async function checkUpdate() {
+  const u = await api("/api/update").catch(() => null);
+  if (!u || !u.available) return;
+  try { if (localStorage.getItem("tizo-skip-update") === u.version) return; } catch {}
+  $("#update-text").textContent = `TizoRecover ${u.version} is available (you have ${u.current}).`;
+  const btn = $("#update-btn");
+  btn.textContent = u.can_install ? "Update now" : "Download";
+  btn.onclick = async () => {
+    if (!u.can_install) { api("/api/open-url", { url: u.page }).catch(() => {}); return; }
+    btn.disabled = true;
+    await api("/api/update/install", {}).catch((e) => toast(e.message));
+    const tick = async () => {
+      const s = await api("/api/update/status").catch(() => null);
+      if (!s) return;
+      if (s.state === "downloading") {
+        btn.textContent = s.total ? `Downloading ${Math.round((s.done / s.total) * 100)}%` : "Downloading…";
+        setTimeout(tick, 500);
+      } else if (s.state === "installing") {
+        btn.textContent = "Installing, TizoRecover will restart…";
+      } else if (s.state === "failed") {
+        btn.disabled = false;
+        btn.textContent = "Update now";
+        toast(`Update failed: ${s.error}`);
+      }
+    };
+    tick();
+  };
+  $("#update-close").onclick = () => {
+    $("#update-banner").hidden = true;
+    try { localStorage.setItem("tizo-skip-update", u.version); } catch {}
+  };
+  $("#update-banner").hidden = false;
 }
 
 async function loadDrives(refresh) {
@@ -859,6 +894,9 @@ async function openErase(disk) {
   $("#ed-sub").textContent = `${size(plan.size)} · disk ${plan.disk} · ${plan.bus}`;
   $("#ed-volumes").innerHTML = plan.volumes.map((v) =>
     `<div>${icon("usb")} <b>${v.letter ? esc(v.letter) + ":" : "(no letter)"}</b> ${esc(v.label || "")} · ${esc(v.filesystem)} · ${size(v.size)}</div>`).join("");
+  const span = ([lo, hi]) => (hi < 90 ? "under a minute" : `about ${duration(lo)} to ${duration(hi)}`);
+  $$("[data-est]", ed).forEach((el) => { el.textContent = `· ${span(plan.estimates[el.dataset.est])}`; });
+  $("input[name=ed-method][value=quick]").checked = true;
   $("#ed-phrase").textContent = plan.phrase;
   $("#ed-typed").value = "";
   $("#ed-understood").checked = false;
@@ -915,7 +953,7 @@ $("#ed-start").onclick = async () => {
   pollErase();
 };
 
-const ERASE_STAGE = { preparing: "Preparing", unmounting: "Unmounting the drive", "random data": "Writing random data", zeros: "Writing zeros", verifying: "Checking it worked", formatting: "Formatting", done: "Done", stopped: "Stopped", failed: "Failed" };
+const ERASE_STAGE = { preparing: "Preparing", "file tables": "Wiping file tables", unmounting: "Unmounting the drive", "random data": "Writing random data", zeros: "Writing zeros", verifying: "Checking it worked", formatting: "Formatting", done: "Done", stopped: "Stopped", failed: "Failed" };
 async function pollErase() {
   const r = await api("/api/erase").catch(() => null);
   if (!r) { erasePoll = setTimeout(pollErase, 1000); return; }
@@ -924,6 +962,7 @@ async function pollErase() {
   const parts = [ERASE_STAGE[r.stage] || r.stage];
   if (r.passes > 1 && r.state === "running") parts.push(`pass ${r.pass} of ${r.passes}`);
   if (r.total) parts.push(`${size(r.done)} of ${size(r.total)} (${pct.toFixed(0)}%)`);
+  if (r.skipped) parts.push(`${size(r.skipped)} already blank, skipped`);
   parts.push(`${duration(r.elapsed)} elapsed`);
   if (r.eta != null) parts.push(`about ${duration(r.eta)} left`);
   $("#ed-status").textContent = parts.join(" · ");

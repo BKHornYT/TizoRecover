@@ -30,6 +30,7 @@ from tizorecover.engine import drives as drives_mod
 from tizorecover.engine.erase import EraseError, EraseJob, Planner
 from tizorecover.engine.session import DEEP, QUICK, ScanJob
 from tizorecover.engine.writer import save_items
+from tizorecover.app.update import Updater
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 if getattr(sys, "frozen", False):
@@ -67,6 +68,7 @@ class App:
         self.recover_stop = threading.Event()
         self.window = None
         self.planner = Planner()
+        self.updater = Updater()
         self.erase: EraseJob | None = None
         self.last_ping = time.time()
         self.lock = threading.Lock()
@@ -294,6 +296,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"items": [it.to_dict() for it in chunk], "total": len(snap)})
         if path == "/api/recover":
             return self._json(app.recover)
+        if path == "/api/update":
+            return self._json(app.updater.check())
+        if path == "/api/update/status":
+            return self._json(app.updater.state)
         if path == "/api/erase":
             return self._json(app.erase.status() if app.erase else {"state": "idle"})
         m = re.fullmatch(r"/api/item/(\d+)(?:/(data|hex|text))?", path)
@@ -380,13 +386,21 @@ class Handler(BaseHTTPRequestHandler):
             if app.job is not None and app.job.drive.disk == plan.disk:
                 app.job.close()
                 app.job = None
-            app.erase = EraseJob(plan, str(body.get("method", "zeros")),
+            app.erase = EraseJob(plan, str(body.get("method", "quick")),
                                  body.get("filesystem") or None, str(body.get("label", "USB"))).start()
             app.drives_at = 0
             return self._json({"ok": True})
         if path == "/api/erase/stop":
             if app.erase is not None:
                 app.erase.stop()
+            return self._json({"ok": True})
+        if path == "/api/update/install":
+            return self._json(app.updater.install())
+        if path == "/api/open-url":
+            url = str(body.get("url", ""))
+            if url.startswith("https://github.com/BKHornYT/TizoRecover"):
+                import webbrowser
+                webbrowser.open(url)
             return self._json({"ok": True})
         if path == "/api/elevate":
             return self._json({"ok": relaunch_as_admin()})

@@ -1,0 +1,55 @@
+name: Release
+
+# Tag-driven, like the other Tizo apps: bump tizorecover/__init__.py, then
+#   git tag v0.2.0 && git push --tags
+# The tag must match __version__: the in-app updater compares against the version in latest.yml,
+# so a mismatch would produce a release that never updates anyone.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python packaging/release_tools.py check-tag "${{ github.ref_name }}"
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Test and build (setup, portable, zip, latest.yml)
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build.ps1
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+
+  # After windows, not parallel: both publish into the same release, and two runners racing to
+  # create it is a 422 for whichever loses. The tag guard above gates both.
+  linux:
+    needs: windows
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Test, build and smoke-test the AppImage
+        run: bash packaging/build-appimage.sh
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*

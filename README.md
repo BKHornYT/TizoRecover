@@ -15,11 +15,29 @@
 5. Every file gets a status: **Good**, **Partial** (part of it was reused) or **Overwritten**, so you know what is worth saving.
 6. **Recover** the files you tick to a folder on *another* drive. TizoRecover never writes to the drive you are recovering from, and refuses to save onto it.
 
-It can also **erase a removable drive** so that nothing on it can be recovered, behind a deliberately slow, typed confirmation.
+It can also **erase a removable drive** (quick or full), behind a deliberately slow, typed confirmation.
 
 ## Download
 
-Get `TizoRecover.exe` from the [Releases](../../releases) page and run it. No installer. USB sticks and memory cards work without administrator rights; internal drives need you to accept one administrator prompt.
+From the [latest release](../../releases/latest):
+
+| File | For |
+| --- | --- |
+| `TizoRecover-<version>-setup.exe` | **Windows, recommended.** Installs for your user (no administrator needed), adds a Start menu entry, and updates itself when a new version is out. |
+| `TizoRecover-<version>-portable.exe` | Windows, nothing to install. Runs from anywhere, even from another USB stick. |
+| `TizoRecover-<version>-x64.zip` | Windows, the unpacked program (window + command line). |
+| `TizoRecover-<version>-x86_64.AppImage` | Linux. Opens in your browser; reading a drive needs root: `sudo ./TizoRecover-…AppImage scan /dev/sdb1`. |
+
+USB sticks and memory cards work without administrator rights on Windows; internal drives need you to accept one administrator prompt.
+
+## Erasing a drive
+
+TizoRecover can also wipe a removable drive (never the Windows drive or an internal one):
+
+- **Quick erase** (under a minute): removes the partition table and file tables, so no files, names or folders remain, then formats. File contents could still be found by a deep scan.
+- **Full erase**: overwrites every byte, so nothing can be recovered. Takes as long as the drive needs to write itself full (USB sticks: roughly 15–40 MB/s); already-blank areas are skipped.
+
+You type a confirmation phrase, tick a box and wait out a short countdown before it starts. Flash drives keep a few spare blocks only their own chip can reach, so not even a full erase is a guarantee against a forensic lab.
 
 ## Supported
 
@@ -57,7 +75,8 @@ pip install pywebview
 python -m tizorecover            # the window
 python -m tizorecover scan E:    # the command line
 python tests/run_all.py          # all test suites
-powershell -File packaging\build.ps1   # builds dist\TizoRecover.exe and TizoRecover-cli.exe
+powershell -File packaging\build.ps1   # setup.exe, portable.exe, x64.zip, latest.yml into release\ (needs Inno Setup 6)
+bash packaging/build-appimage.sh         # the Linux AppImage + latest-linux.yml
 ```
 
 The tests build byte-exact NTFS and FAT volumes in code and recover from them, so they need no real disk.
