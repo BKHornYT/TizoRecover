@@ -45,6 +45,15 @@ const P = {
   shrink: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   alert: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/>',
+  sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  star: '<path d="M12 3l2.7 5.6 6.2.9-4.5 4.4 1 6.1L12 17.3 6.6 20l1-6.1L3.1 9.5l6.2-.9z"/>',
+  panel: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+  dashboard: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  pluscircle: '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
+  monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
   plug: '<path d="M9 2v5M15 2v5M7 7h10v4a5 5 0 0 1-10 0zM12 16v6"/>',
   eject: '<path d="M5 17h14v2H5zM12 5l7 9H5z"/>',
@@ -182,17 +191,24 @@ const STAGE_LABEL = { paused: "Paused", starting: "Starting", opening: "Opening 
 const catStyle = (c) => `style="--cc:var(--c-${c})"`;
 
 /* ---------- theme ---------- */
+// "system" follows Windows' light/dark setting (the default); the button cycles system -> light -> dark.
+const THEME_NEXT = { system: "light", light: "dark", dark: "system" };
+const THEME_ICON = { system: "monitor", light: "sun", dark: "moon" };
+const THEME_TITLE = { system: "Theme: same as Windows", light: "Theme: light", dark: "Theme: dark" };
+let themeMode = "system";
 function setTheme(t) {
-  document.documentElement.dataset.theme = t;
-  $("#theme").innerHTML = icon(t === "dark" ? "sun" : "moon");
-  try { localStorage.setItem("tizo-theme", t); } catch {}
+  themeMode = THEME_NEXT[t] ? t : "system";
+  if (themeMode === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = themeMode;
+  $("#theme").innerHTML = `${icon(THEME_ICON[themeMode])}${THEME_TITLE[themeMode]}`;
+  try { localStorage.setItem("tizo-theme2", themeMode); } catch {}
 }
 (() => {
-  let t = "dark";
-  try { t = localStorage.getItem("tizo-theme") || "dark"; } catch {}
+  let t = "system";
+  try { t = localStorage.getItem("tizo-theme2") || "system"; } catch {}
   setTheme(t);
 })();
-$("#theme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+$("#theme").onclick = () => { setTheme(THEME_NEXT[themeMode]); $("#app-menu").hidden = true; };
 
 /* ---------- state ---------- */
 const S = {
@@ -208,8 +224,13 @@ const S = {
   polling: null,
   speed: [],
   tileCounts: {},
-  tab: "named",
+  groups: new Set(["named", "existing", "carved"]),
+  pvHidden: false,
   cat: null,
+  ext: null,
+  showHidden: false,
+  collapsed: new Set(),
+  tips: true,
   filters: { q: "", status: new Set(["good", "partial", "overwritten"]), size: "", date: "" },
   sort: { key: "name", dir: 1 },
   view: "tree",
@@ -222,7 +243,7 @@ const S = {
   pvTab: "preview",
   reviewDirty: true,
 };
-try { S.mode = localStorage.getItem("tizo-mode") || "deep"; } catch {}
+try { S.mode = localStorage.getItem("tizo-mode") || "deep"; S.tips = localStorage.getItem("tizo-tips") !== "0"; } catch {}
 
 /* ---------- navigation ---------- */
 function go(screen) {
@@ -231,7 +252,12 @@ function go(screen) {
   S.screen = screen;
   if (screen === "gallery" && !S.scan) screen = "devices";
   for (const s of ["devices", "scan", "review", "gallery", "saved", "fix", "tools"]) $(`#screen-${s}`).hidden = s !== screen;
-  $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.goto === screen));
+  // Like Disk Drill: the sidebar is the home list, or -- on a scan's screens -- its dashboard and results.
+  const scanMode = !!S.scan && ["scan", "review", "gallery"].includes(screen);
+  $("#nav-home").hidden = scanMode;
+  $("#nav-scanmode").hidden = !scanMode;
+  $("#nav-gallery").hidden = !scanMode;
+  markNav();
   if (screen === "review") { refilter(); requestAnimationFrame(renderList); }
   if (screen === "scan") renderScan();
   if (screen === "tools") renderTools();
@@ -240,7 +266,53 @@ function go(screen) {
   if (screen === "gallery") { galleryFilter(); requestAnimationFrame(renderGallery); }
   if (screen === "devices" && S.drives.length) loadSaved(true);
 }
-$$(".nav-item").forEach((b) => { b.onclick = () => go(b.dataset.goto); });
+document.addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-goto]");
+  if (!b || b.closest(".dev-body")) return;
+  if (b.dataset.cat !== undefined) {
+    S.cat = b.dataset.cat || null;
+    S.ext = b.dataset.ext || null;
+    S.reviewDirty = true;
+    if (typeof viewport !== "undefined") viewport.scrollTop = 0;
+  }
+  go(b.dataset.goto);
+  if (b.dataset.cat !== undefined && S.screen === "review") refilter();
+  renderNav();
+});
+function markNav() {
+  $$(".nav [data-goto]").forEach((b) => {
+    let on = b.dataset.goto === S.screen;
+    if (on && b.dataset.cat !== undefined) on = (b.dataset.cat || null) === (S.cat || null) && (b.dataset.ext || null) === (S.ext || null);
+    b.classList.toggle("active", on);
+  });
+}
+
+/* ---------- app menu (top-left) ---------- */
+$("#menu-btn").onclick = (e) => { e.stopPropagation(); $("#app-menu").hidden = !$("#app-menu").hidden; };
+document.addEventListener("click", (e) => { if (!e.target.closest("#app-menu")) $("#app-menu").hidden = true; });
+$$("#app-menu [data-menu]").forEach((b) => {
+  if (b.dataset.menu === "theme") return;
+  b.onclick = async () => {
+    $("#app-menu").hidden = true;
+    const what = b.dataset.menu;
+    if (what === "image") return $("#open-image").click();
+    if (what === "tzscan") return pickSavedScan();
+    if (what === "update") {
+      const u = await api("/api/update").catch(() => null);
+      if (u && u.available) return checkUpdate();
+      return toast(u ? `TizoRecover ${u.current} is the newest version.` : "Could not check for updates.");
+    }
+    if (what === "logs") {
+      const r = await api("/api/log").catch(() => null);
+      return r && r.path ? api("/api/open-folder", { path: r.path }).catch(() => {}) : toast("No log yet.");
+    }
+    if (what === "help") return api("/api/open-url", { url: "https://github.com/BKHornYT/TizoRecover/issues" }).catch(() => {});
+    if (what === "about") {
+      return ask("About TizoRecover", `TizoRecover ${S.env.version || ""}: free, open-source file recovery (GPL-3.0). It only ever reads from the drive you recover from.`, "OK");
+    }
+    if (what === "quit") return api("/api/quit", {}).catch(() => window.close());
+  };
+});
 
 /* ---------- start-up ---------- */
 async function init() {
@@ -306,6 +378,7 @@ async function elevate() {
 
 /* ---------- devices ---------- */
 async function loadDrives(refresh) {
+  $("#nav-status").innerHTML = `<span class="spinner sm"></span>Updating disk list…`;
   const box = $("#dev-body");
   if (refresh || !S.drives.length) box.innerHTML = `<div class="dev-empty"><span class="spinner"></span>Looking for drives…</div>`;
   try {
@@ -313,6 +386,7 @@ async function loadDrives(refresh) {
     S.drives = drives;
   } catch (e) {
     box.innerHTML = `<div class="dev-empty">Could not list drives: ${esc(e.message)}</div>`;
+    $("#nav-status").textContent = "";
     return;
   }
   if (!S.drives.some((d) => d.id === S.picked)) {
@@ -320,6 +394,7 @@ async function loadDrives(refresh) {
   }
   await loadSaved(false);
   renderDevices();
+  $("#nav-status").textContent = "";
   if (S.screen === "tools") renderTools();
 }
 
@@ -736,39 +811,40 @@ async function ejectDisk(disk, name = "") {
 
 function renderDevices() {
   const box = $("#dev-body");
-  const list = disks();
+  const all = disks();
+  const hidden = (d) => !d.lost && d.kind === "partition" && !d.letter && d.system;
+  const list = all.map((g) => ({ ...g, parts: S.showHidden ? g.parts : g.parts.filter((d) => !hidden(d)) }))
+    .filter((g) => g.parts.length);
+  const shown = list.reduce((n, g) => n + 1 + (g.image && g.parts.length === 1 ? 0 : g.parts.length), 0);
+  $("#dev-count").textContent = `${plural(list.length, "item")}`;
   if (!list.length) {
-    box.innerHTML = `<div class="dev-empty">No drives found. Plug in a USB stick or memory card, then press Refresh.</div>`;
+    box.innerHTML = `<div class="dev-empty">No drives found. Plug in a USB stick or memory card; it shows up here by itself.</div>`;
     renderPicked();
     return;
   }
   box.innerHTML = list.map((g) => {
-    const typeText = g.image ? "Image file" : [g.bus, g.media && g.media !== "Unspecified" ? g.media : ""].filter(Boolean).join(" · ") || "Disk";
-    const chips = [];
-    if (g.removable) chips.push(`<span class="chip accent">Removable</span>`);
-    if (g.system) chips.push(`<span class="chip">Windows disk</span>`);
-    if (!g.removable && !g.image && g.media === "SSD") chips.push(`<span class="chip warn" title="SSDs erase deleted data on their own (TRIM)">SSD</span>`);
-    const head = `<div class="dev-row disk">
-      <div class="dev-name"><div class="dev-ico ${g.kind === "usb" ? "usb" : ""}">${icon(g.kind)}</div><div class="t"><b title="${esc(g.name)}">${esc(g.name)}</b><small>${chips.join("")}</small></div></div>
-      <div class="cell-muted">${esc(typeText)}</div><div>${g.removable && !g.image ? `<button class="btn ghost sm eject" data-eject="${g.disk}" title="Safely remove this drive">${icon("eject")}Eject</button>` : ""}</div><div class="num">${size(g.size)}</div><div>${searchCell(g.target)}</div></div>`;
     const solo = g.image && g.parts.length === 1;
-    const parts = g.parts.map((d) => {
-      const used = d.size && d.free ? Math.max(0, Math.min(100, ((d.size - d.free) / d.size) * 100)) : null;
+    const collapsed = S.collapsed.has(g.key);
+    const conn = g.image ? "File" : (g.bus || "").toUpperCase() || "—";
+    const head = `<div class="dev-row disk ${collapsed ? "closed" : ""}" data-disk="${esc(g.key)}">
+      <div class="dev-name"><span class="twisty">${icon("chevron")}</span><span class="dimg ${g.kind}">${icon(g.kind)}</span><b title="${esc(g.name)}">${esc(g.name)}</b></div>
+      <div class="cell-muted">${g.image ? "Disk image" : "Hardware disk"}</div>
+      <div class="cell-muted">${esc(conn)}</div>
+      <div class="num">${size(g.size)}</div>
+      <div class="dev-acts">${searchCell(g.target, true)}${g.removable && !g.image ? `<button class="icon-btn eject" data-eject="${g.disk}" title="Eject (safely remove)">${icon("eject")}</button>` : ""}</div></div>`;
+    const parts = collapsed ? "" : g.parts.map((d) => {
       let sub = d.lost ? `<span class="chip warn">${icon("radar")}Lost</span> ${esc(d.found_by)}`
-        : d.kind === "image" ? esc(d.path) : d.kind === "partition" ? "No drive letter, read through the disk"
-        : d.kind === "disk" ? `<span class="chip warn">No partitions</span> Don't format it: scan it, or find lost partitions`
-        : esc(d.letter ? `Partition ${d.partition}` : "");
+        : d.kind === "disk" ? `<span class="chip warn">No partitions</span>` : "";
       const sv = savedFor(d.id);
       if (sv) sub += ` <span class="chip accent" title="${esc(savedText(sv))}">${icon("history")}Saved scan</span>`;
-      const last = solo ? searchCell(g.target)
-        : used == null ? "" : `<div class="usage"><div class="bar"><div style="width:${used}%"></div></div>${size(d.free)} free</div>`;
+      const type = d.lost ? "Lost partition" : d.kind === "image" ? "Disk image" : d.kind === "partition" ? "Partition" : d.kind === "disk" ? "Whole disk" : "Logical volume";
       return `<div class="dev-row part ${solo ? "solo" : ""} ${d.lost ? "lost" : ""} ${S.picked === d.id ? "sel" : ""}" data-id="${esc(d.id)}" tabindex="0">
-        <div class="dev-name"><div class="letter">${d.letter ? esc(d.letter) : icon(d.lost ? "radar" : d.kind === "image" ? "disc" : "drive")}</div>
+        <div class="dev-name"><span class="dimg vol ${d.removable ? "usb" : ""}">${icon(d.lost ? "radar" : d.kind === "image" ? "disc" : "drive")}</span>
           <div class="t"><b title="${esc(driveTitle(d))}">${esc(driveTitle(d))}</b>${sub ? `<small>${sub}</small>` : ""}</div></div>
-        <div class="cell-muted">${d.lost ? "Lost partition" : d.kind === "image" ? "Disk image" : d.kind === "partition" ? "Partition" : d.kind === "disk" ? "Whole disk" : "Volume"}</div>
+        <div class="cell-muted">${type}</div>
         <div class="cell-muted">${esc(fsName(d.filesystem))}</div>
         <div class="num">${size(d.size)}</div>
-        <div>${last}</div>
+        <div class="dev-acts">${solo ? searchCell(g.target, true) : ""}</div>
       </div>`;
     }).join("");
     return `<div class="dev-disk">${solo ? "" : head}${parts}</div>`;
@@ -782,6 +858,9 @@ function renderDevices() {
   $$("[data-pstop]", box).forEach((b) => {
     b.onclick = (e) => { e.stopPropagation(); api("/api/partitions/stop", {}).catch(() => {}); };
   });
+  $$(".dev-row.disk", box).forEach((el) => {
+    el.onclick = () => { const k = el.dataset.disk; S.collapsed.has(k) ? S.collapsed.delete(k) : S.collapsed.add(k); renderDevices(); };
+  });
   $$(".dev-row.part", box).forEach((el) => {
     el.onclick = () => { S.picked = el.dataset.id; $$(".dev-row.part", box).forEach((x) => x.classList.toggle("sel", x === el)); renderPicked(); };
     el.ondblclick = () => startScan(el.dataset.id, S.mode);
@@ -790,15 +869,19 @@ function renderDevices() {
   renderPicked();
 }
 
-function searchCell(target) {
+function searchCell(target, compact = false) {
   const p = S.parts;
   if (p && p.state === "running" && p.target === target) {
     const pct = p.total ? Math.floor((p.done / p.total) * 100) : 0;
-    return `<div class="parts-run"><span class="spinner"></span><span>Searching ${pct}%</span><button class="btn ghost sm" data-pstop>Stop</button></div>`;
+    return compact
+      ? `<div class="parts-run" title="Searching for lost partitions"><span class="spinner sm"></span><span>${pct}%</span><button class="icon-btn" data-pstop title="Stop">${icon("x")}</button></div>`
+      : `<div class="parts-run"><span class="spinner"></span><span>Searching ${pct}%</span><button class="btn ghost sm" data-pstop>Stop</button></div>`;
   }
   const deeper = p && p.target === target && p.state === "done" && !p.thorough;
-  return `<button class="btn ghost sm find-parts" data-pfind="${esc(target)}" data-thorough="${deeper ? 1 : 0}"
-    title="${deeper ? "Read every sector of the drive (slow) for file systems a quick search can miss" : "Look for partitions that were deleted, or file systems a format left behind"}">${icon("radar")}${deeper ? "Search every sector" : "Find lost partitions"}</button>`;
+  const title = deeper ? "Read every sector of the drive (slow) for file systems a quick search can miss"
+    : "Find lost partitions: look for partitions that were deleted, or file systems a format left behind";
+  if (compact) return `<button class="icon-btn find-parts" data-pfind="${esc(target)}" data-thorough="${deeper ? 1 : 0}" title="${title}">${icon("radar")}</button>`;
+  return `<button class="btn ghost sm find-parts" data-pfind="${esc(target)}" data-thorough="${deeper ? 1 : 0}" title="${title}">${icon("radar")}${deeper ? "Search every sector" : "Find lost partitions"}</button>`;
 }
 
 async function findParts(target, thorough) {
@@ -828,32 +911,43 @@ async function pollParts() {
 
 function renderPicked() {
   const d = S.drives.find((x) => x.id === S.picked);
+  $("#dp-empty").hidden = !!d;
+  $("#dp-drive").hidden = !d;
   $("#search-btn").disabled = !d;
-  const sv = d && savedFor(d.id);
+  if (!d) return;
+  $("#dp-ico").className = `dp-ico ${d.removable ? "usb" : ""}`;
+  $("#dp-ico").innerHTML = icon(d.lost ? "radar" : driveKind(d));
+  $("#dp-name").textContent = driveTitle(d).trim();
+  const type = d.lost ? "Lost partition" : d.kind === "image" ? "Disk image" : d.kind === "disk" ? "Whole disk" : d.kind === "partition" ? "Partition" : "Logical volume";
+  $("#dp-sub").textContent = `${type} · ${size(d.size)}`;
+  const sv = savedFor(d.id);
   const rb = $("#resume-btn");
   rb.hidden = !sv;
-  if (sv) rb.innerHTML = `${icon("history")}${sv.state === "done" ? "Open last results" : "Resume scan"}`;
-  $("#search-btn").classList.toggle("primary", !sv || sv.state === "done");
-  rb.classList.toggle("primary", !!sv && sv.state !== "done");
-  if (!d) {
-    $("#dev-picked").innerHTML = `<span class="muted">Select a drive or partition above.</span>`;
-    return;
-  }
   if (sv) {
-    $("#dev-picked").innerHTML = `<div class="dev-ico usb">${icon("history")}</div><div class="t"><b>${esc(driveTitle(d))}</b><span class="note">${esc(savedText(sv))}. ${sv.state === "done" ? "Open its results again" : "Pick up where it left off"}, or start a new scan.</span></div>`;
-    return;
+    rb.innerHTML = `<span class="grow"><b>${sv.state === "done" ? "Open last results" : "Resume scan"}</b><small>${esc(savedText(sv))}</small></span>${icon("chevron")}`;
   }
-  let note = `<span class="note">${esc(fsName(d.filesystem))} · ${size(d.size)}${d.removable ? " · removable" : ""}</span>`;
-  if (d.lost) {
-    note = `<span class="note">Lost ${esc(fsName(d.filesystem))} file system, found by its ${esc(d.found_by)}. Scanning it reads the drive as it was before.</span>`;
-  }
-  if (!d.removable && d.media === "SSD" && d.kind !== "image") {
-    note = `<span class="note warn">SSD: Windows tells SSDs to wipe deleted data (TRIM), often within seconds. Recently deleted files may already be gone.</span>`;
-  } else if (d.system) {
-    note = `<span class="note warn">This is your Windows drive. Windows keeps writing to it, so recover as soon as possible and save to another drive.</span>`;
-  }
-  $("#dev-picked").innerHTML = `<div class="dev-ico ${d.removable ? "usb" : ""}">${icon(driveKind(d))}</div><div class="t"><b>${esc(driveTitle(d))}</b>${note}</div>`;
+  let note = "";
+  if (d.lost) note = `Lost ${esc(fsName(d.filesystem))} file system, found by its ${esc(d.found_by)}. Scanning it reads the drive as it was before.`;
+  else if (d.kind === "disk") note = "No partitions on this disk. Don't let Windows initialize or format it: search it here, or find lost partitions first.";
+  else if (!d.removable && d.media === "SSD" && d.kind !== "image") note = "SSD: Windows tells SSDs to wipe deleted data (TRIM), often within seconds. Recently deleted files may already be gone.";
+  else if (d.system) note = "This is your Windows drive. Windows keeps writing to it, so recover as soon as possible and save to another drive.";
+  $("#dp-note").hidden = !note;
+  $("#dp-note").innerHTML = note ? `${icon("alert")}<span>${note}</span>` : "";
+  const props = [
+    ["Type", type], ["File system", fsName(d.filesystem)], ["Capacity", size(d.size)],
+    ["Free", d.free ? size(d.free) : "—"], ["Connection", d.kind === "image" ? "File" : d.bus || "—"],
+    ["Disk", d.disk_name || "—"], ["Media", d.media && d.media !== "Unspecified" ? d.media : "—"],
+    ["Path", d.kind === "image" ? d.path : d.letter ? `${d.letter}:` : d.path],
+  ];
+  $("#dp-props").innerHTML = `<h4>General</h4>${props.map(([k, v]) => `<div><span>${k}</span><b title="${esc(v)}">${esc(v)}</b></div>`).join("")}`;
+  const target = d.kind === "image" ? d.id : String(d.disk);
+  $("#dp-actions").innerHTML = d.lost ? "" : searchCell(target) + (d.removable && d.kind !== "image"
+    ? `<button class="btn ghost sm" data-eject="${d.disk}">${icon("eject")}Eject</button>` : "");
+  $$("#dp-actions [data-pfind]").forEach((b) => { b.onclick = () => findParts(b.dataset.pfind, b.dataset.thorough === "1"); });
+  $$("#dp-actions [data-pstop]").forEach((b) => { b.onclick = () => api("/api/partitions/stop", {}).catch(() => {}); });
+  $$("#dp-actions [data-eject]").forEach((b) => { b.onclick = () => ejectDisk(Number(b.dataset.eject)); });
 }
+$("#show-hidden").onchange = (e) => { S.showHidden = e.target.checked; renderDevices(); };
 
 function renderMethod() {
   $("#method-label").textContent = S.mode === "quick" ? "Quick scan" : "All recovery methods";
@@ -870,7 +964,7 @@ $$("#method-menu button").forEach((b) => {
 });
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#method")) $("#method-menu").hidden = true;
-  if (!e.target.closest(".pop-wrap")) $("#filter-pop").hidden = true;
+  if (!e.target.closest(".pop-wrap")) $$(".chips .popover").forEach((p) => { p.hidden = true; });
 });
 $("#search-btn").onclick = () => S.picked && startScan(S.picked, S.mode);
 $("#resume-btn").onclick = () => S.picked && startScan(S.picked, S.mode, { resume: true });
@@ -880,8 +974,6 @@ async function pickSavedScan() {
     if (path) await openSavedScan(path);
   } catch (e) { toast(e.message); }
 }
-// The devices page's button leads to the list; picking any .tzscan file stays one click away there.
-$("#open-scan").onclick = () => go("saved");
 $("#saved-other").onclick = pickSavedScan;
 $("#refresh").onclick = () => loadDrives(true);
 $("#open-image").onclick = async () => {
@@ -917,7 +1009,6 @@ function resetForScan(driveId, driveDict, mode = S.mode) {
   S.selected.clear();
   S.current = null;
   S.cat = null;
-  S.tab = "named";
   S.toggled.clear();
   S.speed = [];
   S.lastStep = 0;
@@ -926,9 +1017,6 @@ function resetForScan(driveId, driveDict, mode = S.mode) {
   $("#q").value = "";
   S.reviewDirty = true;
   showPreview(null);
-  $("#nav-scan").hidden = false;
-  $("#nav-review").hidden = false;
-  $("#nav-gallery").hidden = false;
   GAL.items = [];
   const d = S.drives.find((x) => x.id === driveId) || driveDict;
   S.scan = { state: "starting", mode, drive: d || {}, filesystem: d?.filesystem || "unknown", found: 0, counts: {}, progress: { stage: "starting", done: 0, total: 0, elapsed: 0 }, problems: [] };
@@ -1007,62 +1095,66 @@ function renderNav() {
   const s = S.scan;
   if (!s) return;
   const live = running();
-  $("#nav-scan-label").textContent = paused() ? "Paused" : live ? "Scanning…" : s.state === "done" ? "Scan complete" : s.state === "failed" ? "Scan failed" : "Scan stopped";
-  const pill = $("#nav-scan-pill");
-  pill.textContent = live ? `${Math.floor(overallPct(s))}%` : "";
-  pill.hidden = !live;
-  pill.classList.toggle("live", live);
-  $("#nav-review-pill").textContent = nf(S.items.length);
+  $("#nav-scan-spin").hidden = !live;
+  $("#nav-scan-label").textContent = paused() ? "Dashboard (paused)" : "Dashboard";
+  $("#nav-current").hidden = false;
+  $("#nav-current-label").textContent = `${live ? "Scanning" : "Results of"} ${driveTitle(s.drive || {}).trim()}`;
+  const d = s.drive || {};
+  const counts = {}, exts = {};
+  for (const it of S.items) {
+    const c = tileCat(it.category);
+    counts[c] = (counts[c] || 0) + 1;
+    const e = (it.ext || "?").toLowerCase();
+    (exts[c] ||= {})[e] = (exts[c][e] || 0) + 1;
+  }
+  const open = S.screen === "review" ? (S.cat === "other*" ? "other" : S.cat) : null;
+  const row = (attrs, ic, label, n, cls = "") =>
+    `<button class="nav-item ${cls} ${n ? "" : "zero"}" data-goto="review" ${attrs}>${icon(ic)}<span class="grow">${esc(label)}</span>${n ? `<span class="nav-pill">${nf(n)}</span>` : ""}</button>`;
+  let html = row(`data-cat="" id="nav-review"`, driveKind(d), driveTitle(d).trim(), S.items.length, "drive");
+  for (const c of TILE_CATS) {
+    const key = c === "other" ? "other*" : c;
+    html += row(`data-cat="${key}"`, c, CAT_LABEL[c] === "Video" ? "Videos" : CAT_LABEL[c], counts[c] || 0);
+    if (open === c && exts[c]) {
+      for (const [e, n] of Object.entries(exts[c]).sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+        html += row(`data-cat="${key}" data-ext="${esc(e)}"`, "file", e.toUpperCase(), n, "sub");
+      }
+    }
+  }
+  const box = $("#nav-results");
+  if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
   const media = S.items.reduce((n, it) => n + (it.category === "image" || it.category === "video" ? 1 : 0), 0);
-  $("#nav-gallery-pill").textContent = nf(media);
+  $("#nav-gallery-pill").textContent = media ? nf(media) : "";
   if (S.screen === "gallery" && media !== GAL.seen) { galleryFilter(); renderGallery(); }
+  markNav();
 }
 
+const TIPS = [
+  ["Preview first", "Click a file to see it before you recover it. A picture that shows, or a video that plays, will come back fine."],
+  ["Save to another drive", "Never recover onto the drive you are scanning: writing to it can overwrite the very files you want back."],
+  ["Look while it scans", "You can open Review found items or the Gallery while the scan is still running."],
+  ["High chances first", "Files marked High are intact as far as TizoRecover can check. Start with those."],
+  ["Stop any time", "Progress is saved every minute. Stop now, come back later and pick up where it left off."],
+];
 function renderScan() {
   const s = S.scan;
   if (!s) return;
   const d = s.drive || {};
   const live = running();
-  driveIconBox(d, $("#sc-icon"));
-  $("#sc-title").textContent = paused() ? `Paused: waiting for ${driveTitle(d)}` : live ? `Scanning ${driveTitle(d)}` : s.state === "done" ? `Scan of ${driveTitle(d)} complete` : s.state === "failed" ? "The scan could not run" : `Scan of ${driveTitle(d)} stopped`;
-  $("#sc-sub").textContent = [s.mode === "deep" ? "All recovery methods" : "Quick scan", fsName(s.filesystem), size(d.size)].join(" · ");
   const p = s.progress;
   const pct = overallPct(s);
-  const ring = $("#sc-ring");
-  const indeterminate = live && !p.total;
-  ring.classList.toggle("spin", indeterminate);
-  ring.classList.toggle("done", s.state === "done");
-  ring.classList.toggle("failed", s.state === "failed");
-  $("#sc-arc").style.strokeDashoffset = String(326.73 * (1 - (s.state === "done" ? 1 : pct / 100)));
-  $("#sc-pct").innerHTML = s.state === "done" ? icon("check") : indeterminate ? `${nf(s.found)}` : `${Math.floor(pct)}%`;
-  $("#sc-cap").textContent = s.state === "done" ? "Complete" : indeterminate ? (s.found === 1 ? "file found" : "files found") : STAGE_LABEL[p.stage] || p.stage;
-
-  const steps = [{ label: "Reading the file table", sub: "names, folders and dates" }];
-  if (s.mode === "deep") steps.push({ label: "Searching free space by content", sub: "finds files even after a format" });
-  const stepOf = { opening: 0, starting: 0, records: 0, deep: 1 };
-  if (stepOf[p.stage] != null) S.lastStep = stepOf[p.stage];
-  const at = S.lastStep ?? 0;
-  $("#sc-steps").innerHTML = steps.map((st, i) => {
-    let cls = "skip";
-    if (s.state === "done" || i < at) cls = "ok";
-    else if (i === at && live) cls = "now";
-    const mark = cls === "ok" ? icon("check") : String(i + 1);
-    return `<li class="${cls}"><span class="dot">${mark}</span><span>${st.label} <span class="sub">· ${st.sub}</span></span></li>`;
-  }).join("");
-
-  $("#st-elapsed").textContent = duration(p.elapsed);
-  $("#st-eta").textContent = live && p.eta != null ? duration(p.eta) : live ? "—" : "0s";
-  $("#st-done").textContent = p.total ? `${size(p.done)} / ${size(p.total)}` : "—";
-  const sp = currentSpeed();
-  $("#st-speed").textContent = live && sp != null && p.total ? `${size(sp)}/s` : "—";
-  const note = $("#sc-autosave");
-  note.hidden = !s.autosave;
-  if (s.autosave) {
-    note.innerHTML = `${icon("history")}<span>${s.resumed_from ? `Resumed a scan saved ${ago(s.resumed_from)}. ` : ""}${live ? "Progress is saved every minute: stop any time and resume later from the drive list." : "Saved. Reopen these results any time from the drive list."}</span>`;
-  }
-  const badNow = s.bad_bytes && live ? [`${size(s.bad_bytes)} could not be read so far (bad sectors). They are skipped; the scan carries on.`] : [];
-  if (s.state === "paused") badNow.unshift("The drive disconnected. The scan is paused and everything found so far is kept: plug it back in (the same port is best) and it carries on by itself.");
-  $("#sc-problems").innerHTML = [...badNow, ...s.problems].map((x) => `<div class="msg ${s.state === "failed" ? "bad" : "warn"}">${icon("alert")}<span>${esc(x)}</span></div>`).join("");
+  const total = S.items.reduce((a, it) => a + it.size, 0);
+  const name = `“${driveTitle(d).trim()}”`;
+  $("#sc-title").textContent = paused() ? `Paused: waiting for ${name}`
+    : live ? `Scanning ${name}`
+    : s.state === "done" ? `Found ${plural(S.items.length, "file")} on ${size(total)}`
+    : s.state === "failed" ? "The scan could not run" : `Stopped: ${plural(S.items.length, "file")} found on ${size(total)}`;
+  $("#sc-sub").textContent = live
+    ? `${p.total ? `${Math.floor(pct)}% complete` : STAGE_LABEL[p.stage] || "Starting"} – ${plural(S.items.length, "file")} / ${size(total)}`
+    : s.state === "done" ? `Scan completed successfully · ${s.mode === "deep" ? "All recovery methods" : "Quick scan"} · ${driveTitle(d).trim()}`
+    : s.state === "failed" ? "" : `Scan of ${driveTitle(d).trim()} stopped after ${duration(p.elapsed)}. What was found can still be recovered.`;
+  $("#sc-progress").hidden = !live;
+  $("#sc-bar").style.width = `${p.total ? pct : 0}%`;
+  $("#sc-bar").classList.toggle("indet", live && !p.total);
 
   const counts = {}, bytes = {};
   for (const it of S.items) {
@@ -1072,39 +1164,48 @@ function renderScan() {
   }
   const tiles = $("#sc-tiles");
   if (!tiles.children.length) {
-    tiles.innerHTML = TILE_CATS.map((c) => `<button class="tile-cat" data-cat="${c}" ${catStyle(c)}><div class="ti">${icon(c)}</div><div class="n">0</div><div class="l"><span>${CAT_LABEL[c]}</span><span class="b"></span></div></button>`).join("");
-    $$(".tile-cat", tiles).forEach((t) => { t.onclick = () => { S.cat = t.dataset.cat === "other" ? "other*" : t.dataset.cat; go("review"); }; });
+    tiles.innerHTML = TILE_CATS.map((c) => `<button class="dtile" data-cat="${c}" data-tc="${c}"><span class="dt-ico">${icon(c)}</span><b>${CAT_LABEL[c] === "Video" ? "Videos" : CAT_LABEL[c]}</b><small>—</small></button>`).join("");
+    $$(".dtile", tiles).forEach((t) => { t.onclick = () => { S.cat = t.dataset.cat === "other" ? "other*" : t.dataset.cat; S.ext = null; go("review"); refilter(); renderNav(); }; });
   }
   for (const c of TILE_CATS) {
-    const t = $(`.tile-cat[data-cat="${c}"]`, tiles);
+    const t = $(`.dtile[data-cat="${c}"]`, tiles);
     const n = counts[c] || 0;
-    if (S.tileCounts[c] !== n) {
-      t.classList.remove("bump");
-      void t.offsetWidth;
-      if (n) t.classList.add("bump");
-      S.tileCounts[c] = n;
-    }
-    $(".n", t).textContent = nf(n);
-    $(".b", t).textContent = n ? size(bytes[c]) : "";
-    t.classList.toggle("zero", !n);
+    t.classList.toggle("on", n > 0);
+    $("small", t).textContent = n ? `${plural(n, "file")} · ${size(bytes[c])}` : "—";
   }
-  const total = S.items.reduce((a, it) => a + it.size, 0);
-  $("#sc-found-total").textContent = S.items.length ? `${plural(S.items.length, "file")} · ${size(total)}` : live ? "Nothing yet" : "";
-  $("#sc-done-note").innerHTML = live ? "You can look through what has been found while the scan goes on."
-    : s.state === "done" ? `Found <b>${plural(S.items.length, "file")}</b> (${size(total)}) in ${duration(p.elapsed)}.`
-    : s.state === "failed" ? "" : `Stopped after ${duration(p.elapsed)}. What was found so far can still be recovered.`;
-  const rv = $("#sc-review");
-  rv.disabled = !S.items.length;
-  rv.innerHTML = `${icon("files")}Review found items${S.items.length ? ` (${nf(S.items.length)})` : ""}`;
-  const stop = $("#sc-stop");
-  stop.innerHTML = live ? `${icon("stop")}Stop scan` : `${icon("drive")}Scan another drive`;
+  const sp = currentSpeed();
+  const parts = [`${duration(p.elapsed)} elapsed`];
+  if (live && p.eta != null) parts.push(`${duration(p.eta)} remaining`);
+  if (p.total) parts.push(`${size(p.done)} of ${size(p.total)}`);
+  if (live && sp != null && p.total) parts.push(`${size(sp)}/s`);
+  $("#sc-status").textContent = parts.join(", ");
+  const note = $("#sc-autosave");
+  note.hidden = !s.autosave;
+  if (s.autosave) {
+    note.textContent = `${s.resumed_from ? `Resumed a scan saved ${ago(s.resumed_from)}. ` : ""}${live ? "Progress is saved every minute." : "Saved: reopen it any time from Recent Sessions."}`;
+  }
+  const badNow = s.bad_bytes && live ? [`${size(s.bad_bytes)} could not be read so far (bad sectors). They are skipped; the scan carries on.`] : [];
+  if (s.state === "paused") badNow.unshift("The drive disconnected. The scan is paused and everything found so far is kept: plug it back in (the same port is best) and it carries on by itself.");
+  $("#sc-problems").innerHTML = [...badNow, ...s.problems].map((x) => `<div class="msg ${s.state === "failed" ? "bad" : "warn"}">${icon("alert")}<span>${esc(x)}</span></div>`).join("");
+  $("#sc-review").disabled = !S.items.length;
+  $("#sc-recover").disabled = !S.items.length;
+  $("#sc-stop").hidden = !live;
   $("#sc-deeper").hidden = live || s.mode !== "quick" || s.state === "failed" || !d.id;
+  const tip = $("#sc-tip");
+  tip.hidden = !(live && S.tips);
+  if (!tip.hidden) {
+    const [t, x] = TIPS[Math.floor(Date.now() / 12000) % TIPS.length];
+    $("#sc-tip-title").textContent = `Tip: ${t}.`;
+    $("#sc-tip-text").textContent = x;
+  }
 }
 $("#sc-stop").onclick = async () => {
-  if (running()) {
-    if (await ask("Stop scanning?", "Files found so far stay in the list and can still be recovered.", "Stop scan")) api("/api/scan/stop", {}).catch(() => {});
-  } else go("devices");
+  if (running() && await ask("Stop scanning?", "Files found so far stay in the list and can still be recovered. Progress is saved, so you can resume later.", "Stop scan")) {
+    api("/api/scan/stop", {}).catch(() => {});
+  }
 };
+$("#sc-recover").onclick = () => openRecover(S.items.slice());
+$("#sc-tip-close").onclick = () => { S.tips = false; try { localStorage.setItem("tizo-tips", "0"); } catch {} $("#sc-tip").hidden = true; };
 $("#sc-review").onclick = () => go("review");
 $("#sc-deeper").onclick = () => S.scan && startScan(S.scan.drive.id, "deep");
 
@@ -1113,10 +1214,10 @@ function renderReviewHead() {
   const s = S.scan;
   if (!s) return;
   const d = s.drive || {};
-  driveIconBox(d, $("#rv-icon"));
-  $("#rv-title").textContent = driveTitle(d);
-  const total = S.items.reduce((a, it) => a + it.size, 0);
-  $("#rv-sub").textContent = `${plural(S.items.length, "file")} found · ${size(total)} · ${fsName(s.filesystem)}`;
+  const total = (S.shown || []).reduce((a, it) => a + it.size, 0);
+  const cat = S.cat === "other*" ? "other" : S.cat;
+  $("#rv-title").textContent = S.ext ? S.ext.toUpperCase() : cat ? (cat === "video" ? "Videos" : CAT_LABEL[cat]) : driveTitle(d).trim();
+  $("#rv-sub").textContent = `${plural((S.shown || []).length, "file")} / ${size(total)}`;
   const live = running();
   $("#rv-scanpill").hidden = !live;
   if (live) {
@@ -1145,27 +1246,26 @@ function passesFilters(it) {
   }
   return true;
 }
-const inTab = (it) => (S.tab === "named" ? it.named : !it.named);
-const catMatch = (it) => !S.cat || (S.cat === "other*" ? !TILE_CATS.slice(0, 5).includes(it.category) : it.category === S.cat);
+// Disk Drill's three groups, as top-level rows of one tree.
+const GROUPS = ["named", "existing", "carved"];
+const GROUP_LABEL = { named: "Deleted or lost", existing: "Existing", carved: "Reconstructed" };
+const groupOf = (it) => (!it.named ? "carved" : it.existing ? "existing" : "named");
+const inTab = (it) => S.groups.has(groupOf(it));
+const catMatch = (it) => (!S.cat || (S.cat === "other*" ? !TILE_CATS.slice(0, 5).includes(it.category) : it.category === S.cat))
+  && (!S.ext || (it.ext || "").toLowerCase() === S.ext);
 
 function refilter() {
   S.reviewDirty = false;
   const q = S.filters.q.trim().toLowerCase();
   const base = [];
-  let named = 0, carved = 0;
+  S.groupCounts = { named: 0, existing: 0, carved: 0 };
   for (const it of S.items) {
-    if (it.named) named++; else carved++;
+    S.groupCounts[groupOf(it)]++;
     if (!inTab(it)) continue;
     if (q && !(`${it.folder}/${it.name}`.toLowerCase().includes(q))) continue;
     if (!passesFilters(it)) continue;
     base.push(it);
   }
-  $("#tab-n-named").textContent = nf(named);
-  $("#tab-n-carved").textContent = nf(carved);
-  $$("#rv-tabs > button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
-  $("#tab-info").textContent = S.tab === "named"
-    ? "Deleted files the drive's file table still remembers: real names, folders and dates."
-    : "Found by their contents in free space. Original names are gone, so they are grouped by type.";
   renderTypes(base);
   S.shown = base.filter(catMatch);
   sortFiles(S.shown);
@@ -1218,8 +1318,9 @@ function sortFiles(list) {
 }
 
 function folderPath(it) {
-  if (S.tab === "named") return it.folder ? it.folder.split("/").filter(Boolean) : [];
-  return [CAT_LABEL[it.category] || "Other", (it.ext || "unknown").toUpperCase()];
+  const g = groupOf(it);
+  if (g !== "carved") return [GROUP_LABEL[g], ...(it.folder ? it.folder.split("/").filter(Boolean) : [])];
+  return [GROUP_LABEL[g], CAT_LABEL[it.category] || "Other", (it.ext || "unknown").toLowerCase()];
 }
 
 function buildTree(files) {
@@ -1232,7 +1333,8 @@ function buildTree(files) {
       acc = acc ? `${acc}/${part}` : part;
       let kid = node.kids.get(part);
       if (!kid) {
-        kid = { key: acc, name: part, depth: node.depth + 1, kids: new Map(), files: [], count: 0, bytes: 0, sel: 0, deleted: false, newest: 0 };
+        kid = { key: acc, name: part, depth: node.depth + 1, kids: new Map(), files: [], count: 0, bytes: 0, sel: 0, deleted: false, newest: 0,
+          group: node.depth === -1 ? groupOf(it) : null };
         node.kids.set(part, kid);
       }
       node = kid;
@@ -1256,7 +1358,8 @@ function recount(node = S.tree) {
 
 function isOpen(node) {
   if (S.toggled.has(node.key)) return S.toggled.get(node.key);
-  return S.shown.length <= 400 || node.depth === 0 && S.tab === "carved";
+  if (node.group) return true;
+  return S.shown.length <= 400 || (node.depth === 1 && node.key.startsWith(GROUP_LABEL.carved));
 }
 
 function flatten(all = false) {
@@ -1268,8 +1371,9 @@ function flatten(all = false) {
     const folderSort = S.sort.key === "size" ? (a, b) => S.sort.dir * (a.bytes - b.bytes)
       : S.sort.key === "modified" ? (a, b) => S.sort.dir * (a.newest - b.newest)
       : (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
+    const groupSort = (a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group);
     const walk = (node) => {
-      for (const k of [...node.kids.values()].sort(folderSort)) {
+      for (const k of [...node.kids.values()].sort(node.depth === -1 ? groupSort : folderSort)) {
         const open = all || isOpen(k);
         rows.push({ folder: k, depth: k.depth, open });
         if (open) walk(k);
@@ -1338,8 +1442,14 @@ function renderList() {
     if (r.folder) {
       const f = r.folder;
       const state = f.sel === 0 ? "" : f.sel === f.count ? "checked" : "data-ind";
-      entries.push([`r${i}|d${f.key}|${r.open ? 1 : 0}|${state}|${f.count}|${r.depth}`, () => {
+      entries.push([`r${i}|d${f.key}|${r.open ? 1 : 0}|${state}|${f.count}|${f.bytes}|${r.depth}`, () => {
         const pad = `padding-left:${r.depth * 20}px`;
+        if (f.group) {
+          return `<div class="row folder group ${r.open ? "open" : ""}" data-i="${i}" style="top:${i * ROW}px">
+        <div class="c-check"><input type="checkbox" class="check" data-fpick="${i}" ${state === "checked" ? "checked" : ""} ${state === "data-ind" ? "data-ind" : ""}></div>
+        <div class="name-cell"><span class="twisty">${icon("chevron")}</span><span class="nm">${esc(f.name)} (${nf(f.count)}) - ${size(f.bytes)}</span></div>
+        <div></div><div></div><div></div><div></div></div>`;
+        }
         return `<div class="row folder ${r.open ? "open" : ""} ${f.deleted ? "deleted" : ""}" data-i="${i}" style="top:${i * ROW}px">
         <div class="c-check"><input type="checkbox" class="check" data-fpick="${i}" ${state === "checked" ? "checked" : ""} ${state === "data-ind" ? "data-ind" : ""}></div>
         <div class="name-cell" style="${pad}"><span class="twisty">${icon("chevron")}</span>${icon("folder", "fi")}<span class="nm" title="${esc(f.key)}${f.deleted ? " (deleted folder)" : ""}">${esc(f.name)}</span><span class="cnt">${nf(f.count)}</span></div>
@@ -1526,12 +1636,15 @@ function renderSelection() {
     ? `<b>${plural(items.length, "file")}</b> selected · ${size(bytes)}`
     : `Tick the files and folders you want back <span class="hint"><kbd>Space</kbd> Quick Look</span>`;
   const btn = $("#recover-btn");
-  btn.disabled = !items.length;
-  btn.innerHTML = `${icon("download")}Recover${items.length ? ` ${plural(items.length, "file")}` : ""}`;
+  const all = S.shown || [];
+  btn.disabled = !items.length && !all.length;
+  btn.textContent = items.length ? "Recover" : "Recover all…";
+  $("#sel-sum").textContent = items.length ? `${plural(items.length, "item")} on ${size(bytes)}`
+    : all.length ? `${plural(all.length, "item")} on ${size(all.reduce((a, it) => a + it.size, 0))}` : "";
   const shownSel = S.shown.length ? S.shown.filter((it) => S.selected.has(it.id)).length : 0;
-  const all = $("#check-all");
-  all.checked = !!S.shown.length && shownSel === S.shown.length;
-  all.indeterminate = shownSel > 0 && shownSel < S.shown.length;
+  const box = $("#check-all");
+  box.checked = !!S.shown.length && shownSel === S.shown.length;
+  box.indeterminate = shownSel > 0 && shownSel < S.shown.length;
   $("#select-none").hidden = !items.length;
 }
 
@@ -1556,12 +1669,9 @@ function renderEmpty() {
     return;
   }
   if (S.items.length) {
-    const other = S.tab === "named" ? "carved" : "named";
-    el.innerHTML = `<div class="box"><div class="big-ico">${icon(S.tab === "named" ? "trash" : "sparkle")}</div>
-      <h3>${S.tab === "named" ? "No files with names" : "Nothing reconstructed"}</h3>
-      ${S.tab === "named" ? "The file table no longer remembers any deleted files, but the content search found some." : s.mode === "quick" ? "A quick scan does not search by content. Run all recovery methods to look here." : "The content search found nothing beyond the named files."}
-      <p><button class="btn" id="empty-other">Show ${S.tab === "named" ? "reconstructed" : "deleted or lost"} files</button></p></div>`;
-    $("#empty-other").onclick = () => { S.tab = other; S.cat = null; refilter(); };
+    el.innerHTML = `<div class="box"><div class="big-ico">${icon("sliders")}</div><h3>Nothing to show</h3>The groups that are switched off under Show hold all the files found.
+      <p><button class="btn" id="empty-other">Show all groups</button></p></div>`;
+    $("#empty-other").onclick = () => { S.groups = new Set(GROUPS); refilter(); };
     return;
   }
   const d = s.drive || {};
@@ -1580,9 +1690,6 @@ function renderEmpty() {
 }
 
 /* tabs, search, sort, view, filters */
-$$("#rv-tabs > button").forEach((b) => {
-  b.onclick = () => { S.tab = b.dataset.tab; S.cat = null; viewport.scrollTop = 0; refilter(); };
-});
 let qTimer = null;
 $("#q").oninput = (e) => { S.filters.q = e.target.value; clearTimeout(qTimer); qTimer = setTimeout(() => { viewport.scrollTop = 0; refilter(); }, 140); };
 $$("#thead [data-sort]").forEach((el) => {
@@ -1612,9 +1719,49 @@ function renderChanceFilters() {
 }
 function renderFilterBadge() {
   const f = S.filters;
-  const n = (f.status.size < 3 ? 1 : 0) + (f.size ? 1 : 0) + (f.date ? 1 : 0);
-  $("#filter-n").hidden = !n;
-  $("#filter-n").textContent = n;
+  const setChip = (id, active, label, base) => {
+    const c = $(id);
+    c.classList.toggle("on", !!active);
+    $(".fl", c).textContent = active ? label : base;
+  };
+  const cat = S.cat === "other*" ? "other" : S.cat;
+  setChip("#chip-type", cat || S.ext, S.ext ? S.ext.toUpperCase() : cat ? (cat === "video" ? "Videos" : CAT_LABEL[cat]) : "", "File type");
+  setChip("#chip-size", f.size, $("#f-size").selectedOptions[0]?.textContent || "", "File size");
+  setChip("#chip-date", f.date, $("#f-date").selectedOptions[0]?.textContent || "", "Date modified");
+  const names = ["good", "partial", "overwritten"].filter((k) => f.status.has(k)).map((k) => CHANCE[k].label);
+  setChip("#chip-chances", f.status.size < 3, names.join(", ") || "None", "Recovery chances");
+  const hiddenGroups = GROUPS.filter((g) => !S.groups.has(g) && (S.groupCounts || {})[g]);
+  setChip("#chip-show", hiddenGroups.length, `Show: ${GROUPS.filter((g) => S.groups.has(g)).map((g) => GROUP_LABEL[g]).join(", ") || "nothing"}`, "Show");
+  $("#f-reset").hidden = !(cat || S.ext || f.size || f.date || f.status.size < 3 || hiddenGroups.length || f.q);
+}
+function renderShowPop() {
+  $("#pop-show").innerHTML = `<div class="pop-sec"><h4>Show</h4>${GROUPS.map((g) =>
+    `<label class="opt"><input type="checkbox" class="check" data-group="${g}" ${S.groups.has(g) ? "checked" : ""}><span>${GROUP_LABEL[g]} <small>(${nf((S.groupCounts || {})[g] || 0)})</small></span></label>`).join("")}</div>`;
+  $$("#pop-show [data-group]").forEach((el) => {
+    el.onchange = () => { el.checked ? S.groups.add(el.dataset.group) : S.groups.delete(el.dataset.group); refilter(); };
+  });
+}
+function renderTypePop() {
+  const counts = {};
+  for (const it of S.items) if (inTab(it)) counts[tileCat(it.category)] = (counts[tileCat(it.category)] || 0) + 1;
+  $("#pop-type").innerHTML = `<div class="pop-sec"><h4>File type</h4>
+    <button class="pop-item ${!S.cat ? "sel" : ""}" data-pcat="">All files</button>
+    ${TILE_CATS.map((c) => `<button class="pop-item ${(S.cat === c || (c === "other" && S.cat === "other*")) ? "sel" : ""}" data-pcat="${c === "other" ? "other*" : c}" ${counts[c] ? "" : "disabled"}>${icon(c)}${c === "video" ? "Videos" : CAT_LABEL[c]}<small>${nf(counts[c] || 0)}</small></button>`).join("")}</div>`;
+  $$("#pop-type [data-pcat]").forEach((b) => {
+    b.onclick = () => { S.cat = b.dataset.pcat || null; S.ext = null; $("#pop-type").hidden = true; viewport.scrollTop = 0; refilter(); renderNav(); };
+  });
+}
+const CHIP_POPS = { "#chip-show": "#pop-show", "#chip-type": "#pop-type", "#chip-size": "#pop-size", "#chip-date": "#pop-date", "#chip-chances": "#pop-chances" };
+for (const [chip, pop] of Object.entries(CHIP_POPS)) {
+  $(chip).onclick = (e) => {
+    e.stopPropagation();
+    const open = $(pop).hidden;
+    Object.values(CHIP_POPS).forEach((p) => { $(p).hidden = true; });
+    if (pop === "#pop-show") renderShowPop();
+    if (pop === "#pop-type") renderTypePop();
+    if (pop === "#pop-chances") renderChanceFilters();
+    $(pop).hidden = !open;
+  };
 }
 function resetFilters() {
   S.filters.status = new Set(["good", "partial", "overwritten"]);
@@ -1622,17 +1769,18 @@ function resetFilters() {
   S.filters.date = "";
   S.filters.q = "";
   S.cat = null;
+  S.ext = null;
+  S.groups = new Set(GROUPS);
   $("#q").value = "";
   $("#f-size").value = "";
   $("#f-date").value = "";
   renderChanceFilters();
   refilter();
+  renderNav();
 }
-$("#filter-btn").onclick = (e) => { e.stopPropagation(); renderChanceFilters(); $("#filter-pop").hidden = !$("#filter-pop").hidden; };
 $("#f-size").onchange = (e) => { S.filters.size = e.target.value; refilter(); };
 $("#f-date").onchange = (e) => { S.filters.date = e.target.value; refilter(); };
 $("#f-reset").onclick = resetFilters;
-$("#f-close").onclick = () => { $("#filter-pop").hidden = true; };
 
 /* ---------- preview ---------- */
 let previewToken = 0;
@@ -1643,7 +1791,8 @@ function select(it) {
   showPreview(it);
 }
 function showPreview(it) {
-  $("#preview").hidden = !it;
+  $("#preview").hidden = S.pvHidden;
+  $("#preview").classList.toggle("empty", !it);
   if (!it) { S.current = null; renderList(); return; }
   $("#pv-name").textContent = it.name;
   $("#pv-path").textContent = it.named ? `/${it.path}` : "Reconstructed from content (original name unknown)";
@@ -1651,6 +1800,12 @@ function showPreview(it) {
   renderPvTab();
 }
 $("#pv-close").onclick = () => showPreview(null);
+$("#pv-toggle").onclick = () => {
+  S.pvHidden = !S.pvHidden;
+  $("#preview").hidden = S.pvHidden;
+  $("#pv-toggle").classList.toggle("on", !S.pvHidden);
+  setTimeout(renderList, 30);
+};
 $("#pv-wide").onclick = () => {
   const p = $("#preview");
   p.classList.toggle("wide");
@@ -1845,7 +2000,7 @@ const dlg = $("#recover-dialog");
 let recoverItems = [];
 let recoverPoll = null;
 let recoverState = "form";
-$("#recover-btn").onclick = () => openRecover(selectedItems());
+$("#recover-btn").onclick = () => openRecover(S.selected.size ? selectedItems() : (S.shown || []).slice());
 
 function setRecoverView(view) {
   recoverState = view;

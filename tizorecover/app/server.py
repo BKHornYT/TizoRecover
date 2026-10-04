@@ -610,6 +610,15 @@ class Handler(BaseHTTPRequestHandler):
             with app.lock:
                 app.drives_at = 0.0
             return self._json({"ok": True, "message": message})
+        if path == "/api/quit":
+            self._json({"ok": True})
+            if app.job is not None:
+                app.job.stop()
+            if app.window is not None:
+                threading.Timer(0.2, app.window.destroy).start()
+            else:
+                threading.Timer(0.5, lambda: os._exit(0)).start()
+            return None
         if path == "/api/client-error":
             crashlog.log.error("page: %s", str(body.get("message", ""))[:4000])
             return self._json({"ok": True})

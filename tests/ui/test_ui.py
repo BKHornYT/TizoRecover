@@ -58,6 +58,17 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         FAILS.append(label)
 
 
+def nav(page, goto: str) -> None:
+    """Click a sidebar/top-bar destination; from a scan's screens, go home first (like Disk Drill)."""
+    target = page.locator(f"[data-goto={goto}]:visible")
+    if not target.count():
+        # home -> the scan's own screens: through "Current scan"; scan screens -> home: the home button
+        hop = "scan" if goto in ("review", "gallery") else "devices"
+        page.locator(f"[data-goto={hop}]:visible").first.click()
+        target = page.locator(f"[data-goto={goto}]:visible")
+    target.first.click()
+
+
 def main() -> int:
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "tests", "ui", "out")
     os.makedirs(out, exist_ok=True)
@@ -105,34 +116,41 @@ def main() -> int:
         shot("1-devices")
         page.click("#happened [data-hap=missing]")
         check("what happened: drive missing opens Fix a drive", page.locator("#screen-fix").is_visible())
-        page.click(".nav-item[data-goto=devices]")
+        nav(page, "devices")
         page.locator(".dev-row.part").first.click()
 
         print("scanning")
         page.click("#search-btn")
         page.wait_for_selector("#screen-scan:not([hidden])")
         try:
-            page.wait_for_function("document.querySelector('#sc-title').textContent.includes('complete')",
+            page.wait_for_function("document.querySelector('#sc-title').textContent.startsWith('Found')",
                                    timeout=60000)
         except Exception:
             shot("fail-scan")
             print("  title:", page.inner_text("#sc-title"), "| errors:", errors[:5])
             raise
         page.wait_for_timeout(300)
-        tiles = page.locator(".tile-cat")
+        tiles = page.locator(".dtile")
         check("six type tiles", tiles.count() == 6)
-        pictures = int(page.locator('.tile-cat[data-cat=image] .n').inner_text().replace(",", ""))
+        check("tiles light up for what was found", page.locator(".dtile.on[data-cat=image]").count() == 1)
+        pictures = int(page.locator('.dtile[data-cat=image] small').inner_text().split()[0].replace(",", ""))
         check("pictures counted", pictures >= 8, str(pictures))
-        check("steps all done", page.locator("#sc-steps li.ok").count() == 2)
+        check("dashboard says what was found", page.inner_text("#sc-title").startswith("Found"), page.inner_text("#sc-title"))
         shot("2-scan-done")
 
         print("review")
         page.click("#sc-review")
         page.wait_for_selector("#screen-review:not([hidden])")
-        named = int(page.inner_text("#tab-n-named"))
-        carved = int(page.inner_text("#tab-n-carved"))
-        check("named tab count", named == 17, str(named))
-        check("reconstructed tab count", carved >= 5, str(carved))
+        import re as _re
+        page.click("#chip-show")
+        group_text = lambda g: page.locator(f"#pop-show label:has([data-group={g}])").inner_text()  # noqa: E731
+        named = int(_re.search(r"\(([\d,]+)\)", group_text("named")).group(1).replace(",", ""))
+        carved = int(_re.search(r"\(([\d,]+)\)", group_text("carved")).group(1).replace(",", ""))
+        page.click("#rv-title")
+        check("group row in the tree", "Deleted or lost (17)" in page.locator(".row.group").first.inner_text())
+        check("one tree: Deleted or lost group", named == 17, str(named))
+        check("one tree: Reconstructed group", carved >= 5, str(carved))
+        check("preview panel waits for a file", "Select a file" in page.inner_text("#preview"))
         check("folders shown", page.locator(".row.folder").count() >= 4)
         check("deleted folder marked", page.locator(".row.folder.deleted").count() >= 1)
         check("chances column", page.locator(".row.file .ch").count() > 0)
@@ -168,7 +186,7 @@ def main() -> int:
         page.click("#pv-tabs [data-tab=preview]")
 
         print("gallery")
-        page.click(".nav-item[data-goto=gallery]")
+        nav(page, "gallery")
         page.wait_for_selector(".gal-tile")
         tiles = page.locator(".gal-tile").count()
         check("gallery shows the pictures and videos", tiles >= 8, str(tiles))
@@ -196,7 +214,7 @@ def main() -> int:
         page.locator(".gal-tile.sel").last.hover()
         page.locator(".gal-tile.sel").last.locator("[data-gpick]").click()     # put the selection back
         check("unticking works", page.locator(".gal-tile.sel").count() == picked - 1)
-        page.click(".nav-item[data-goto=review]")
+        nav(page, "review")
 
         print("quick look")
         page.locator(".row.file", has_text="IMG_2042.png").locator("[data-eye]").click()
@@ -235,22 +253,25 @@ def main() -> int:
         page.fill("#q", "")
         page.wait_for_timeout(400)
 
-        page.click("#filter-btn")
+        page.click("#chip-chances")
         page.locator("#f-chances [data-st=good]").uncheck()
         page.wait_for_timeout(200)
         low = page.locator(".row.file").count()
         check("chances filter", low == 1, f"{low} rows without High")
-        check("filter badge", page.inner_text("#filter-n") == "1")
+        check("chip shows the filter", "on" in (page.get_attribute("#chip-chances", "class") or ""))
         shot("6-filters")
         page.click("#f-reset")
-        page.click("#f-close")
+        page.click("#rv-title")
 
-        page.click(".type-item[data-cat=document]")
+        page.click("#nav-results [data-cat=document]:not([data-ext])")
         docs = page.locator(".row.file").count()
         check("type filter: documents", docs >= 4, str(docs))
-        page.click(".type-item[data-cat='']")
+        page.click("#nav-results [data-cat='']")
 
-        page.click("#rv-tabs [data-tab=carved]")
+        page.click("#chip-show")
+        page.locator("#pop-show [data-group=named]").uncheck()
+        page.click("#rv-title")
+        check("Show: only reconstructed", page.locator(".row.group", has_text="Deleted or lost").count() == 0)
         check("reconstructed grouped by type", page.locator(".row.folder", has_text="Pictures").count() == 1)
         shot("7-reconstructed")
         page.click("#view-seg [data-view=grid]")
@@ -258,10 +279,10 @@ def main() -> int:
         check("grid tiles", page.locator(".tile").count() >= 5)
         shot("8-grid")
         page.click("#view-seg [data-view=tree]")
-        page.click("#rv-tabs [data-tab=named]")
+        page.click("#f-reset")
 
         print("recover")
-        page.click("#select-none")
+        page.evaluate("document.querySelector('#select-none').click()")   # clear whatever is ticked
         page.locator(".row.folder", has_text="Photos").first.locator("[data-fpick]").click()
         page.click("#recover-btn")
         page.wait_for_selector("#recover-dialog[open]")
@@ -285,7 +306,7 @@ def main() -> int:
         check("recovered files byte-identical", same == len(want) == 9, f"{same}/{len(want)}")
 
         print("saved scan")
-        page.click(".nav-item[data-goto=devices]")
+        nav(page, "devices")
         page.wait_for_selector(".dev-row.part .chip", timeout=10000)
         check("drive shows saved scan", "Saved scan" in page.inner_text(".dev-row.part"))
         check("resume offered", page.locator("#resume-btn").is_visible()
@@ -296,18 +317,18 @@ def main() -> int:
         check("asks before clearing the ticked files", "new scan" in page.inner_text("#cf-title").lower())
         page.click("#cf-yes")
         page.wait_for_selector("#screen-scan:not([hidden])")
-        page.wait_for_function("document.querySelector('#sc-title').textContent.includes('complete')"
+        page.wait_for_function("document.querySelector('#sc-title').textContent.startsWith('Found')"
                                " && !document.querySelector('#sc-autosave').hidden", timeout=30000)
-        check("results reopened", f"{named + carved} files" in page.inner_text("#sc-found-total"),
-              page.inner_text("#sc-found-total"))
+        check("results reopened", f"{named + carved} files" in page.inner_text("#sc-title"),
+              page.inner_text("#sc-title"))
         check("resumed note", "Resumed" in page.inner_text("#sc-autosave"))
-        page.click(".nav-item[data-goto=devices]")
+        nav(page, "devices")
         page.click("#search-btn")
         page.wait_for_selector("#confirm-dialog[open]")
         check("new scan asks before replacing the save", "Replace" in page.inner_text("#cf-title"))
         page.click("#cf-no")
 
-        page.click(".nav-item[data-goto=saved]")
+        nav(page, "saved")
         page.wait_for_selector(".saved-row")
         check("saved scans listed", page.locator(".saved-row", has_text="demo.img").count() == 1)
         check("saved scans say where", "TizoRecover" in page.inner_text("#saved-where"))
@@ -318,7 +339,7 @@ def main() -> int:
         check("saved scan opens from the list", True)
 
         print("lost partitions")
-        page.click(".nav-item[data-goto=devices]")
+        nav(page, "devices")
         page.wait_for_selector("[data-pfind]")
         disk_btn = page.locator(".dev-disk", has_text="formatted-disk.img").locator("[data-pfind]")
         disk_btn.click()
@@ -333,14 +354,14 @@ def main() -> int:
         page.click("#method-menu [data-mode=quick]")
         page.click("#search-btn")
         page.wait_for_selector("#screen-scan:not([hidden])")
-        page.wait_for_function("document.querySelector('#sc-title').textContent.includes('complete')", timeout=60000)
+        page.wait_for_function("document.querySelector('#sc-title').textContent.startsWith('Found')", timeout=60000)
         page.click("#sc-review")
         page.wait_for_selector(".row.file")
         check("undo format: old file by name", page.locator(".row.file", has_text="before the format.png").count() == 1)
         shot("15-undo-format")
 
         print("fix a drive")
-        page.click(".nav-item[data-goto=fix]")
+        nav(page, "fix")
         page.wait_for_selector(".fix-item", timeout=30000)
         titles = page.inner_text("#fix-list")
         check("failed connection reported", "failed to connect" in titles)
@@ -357,15 +378,32 @@ def main() -> int:
         shot("20-fix-watch")
 
         print("tools + theme")
-        page.click(".nav-item[data-goto=tools]")
+        nav(page, "tools")
         check("tools screen", page.locator("#screen-tools").is_visible())
-        page.click(".nav-item[data-goto=review]")
+        nav(page, "review")
+        page.click("#menu-btn")
         page.click("#theme")
         page.wait_for_timeout(200)
         shot("11-review-light")
-        page.click(".nav-item[data-goto=devices]")
+        nav(page, "devices")
         shot("12-devices-light")
+        page.click("#menu-btn")
         page.click("#theme")
+        print("dark (Windows dark mode)")
+        page.click("#menu-btn")
+        page.click("#theme")                                      # back to "same as Windows"
+        page.keyboard.press("Escape")
+        page.emulate_media(color_scheme="dark")
+        nav(page, "devices")
+        page.wait_for_timeout(200)
+        check("follows Windows dark mode", page.evaluate("getComputedStyle(document.body).backgroundColor") != "rgb(255, 255, 255)")
+        shot("22-devices-dark")
+        nav(page, "scan")
+        page.wait_for_timeout(200)
+        shot("23-dashboard-dark")
+        nav(page, "review")
+        page.wait_for_timeout(300)
+        shot("24-review-dark")
         browser.close()
 
     check("no JavaScript errors", not errors, "; ".join(errors[:3]))

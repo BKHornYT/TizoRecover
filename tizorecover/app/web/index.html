@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,23 +11,42 @@
 <div class="app">
 
 <nav class="nav" aria-label="Main">
-  <div class="brand"><img src="logo.svg" alt=""><span><b>Tizo</b>Recover</span></div>
-  <div class="nav-label">Recovery</div>
-  <button class="nav-item active" data-goto="devices"><span data-icon="drive"></span>Data recovery</button>
-  <button class="nav-item" data-goto="scan" id="nav-scan" hidden><span data-icon="radar"></span><span class="grow" id="nav-scan-label">Current scan</span><span class="nav-pill" id="nav-scan-pill"></span></button>
-  <button class="nav-item" data-goto="review" id="nav-review" hidden><span data-icon="files"></span><span class="grow">Found files</span><span class="nav-pill" id="nav-review-pill"></span></button>
-  <button class="nav-item" data-goto="gallery" id="nav-gallery" hidden><span data-icon="image"></span><span class="grow">Gallery</span><span class="nav-pill" id="nav-gallery-pill"></span></button>
-  <button class="nav-item" data-goto="saved"><span data-icon="history"></span><span class="grow">Saved scans</span><span class="nav-pill" id="nav-saved-pill" hidden></span></button>
-  <div class="nav-label">Tools</div>
-  <button class="nav-item" data-goto="fix"><span data-icon="plug"></span>Fix a drive</button>
-  <button class="nav-item" data-goto="tools"><span data-icon="wrench"></span>Disk tools</button>
+  <div class="nav-top">
+    <button class="icon-btn" id="menu-btn" title="Menu"><span data-icon="menu"></span></button>
+    <span class="nav-app"><img src="logo.svg" alt=""><span><b>Tizo</b>Recover</span></span>
+    <div class="app-menu" id="app-menu" hidden>
+      <button data-menu="image">Attach disk image…</button>
+      <button data-menu="tzscan">Open a scan file…</button>
+      <hr>
+      <button id="theme" data-menu="theme"></button>
+      <button data-menu="update">Check for updates…</button>
+      <button data-menu="logs">TizoRecover logs</button>
+      <button data-menu="help">Help &amp; support</button>
+      <button data-menu="about">About TizoRecover</button>
+      <hr>
+      <button data-menu="quit">Quit TizoRecover</button>
+    </div>
+  </div>
+  <div class="nav-sec" id="nav-home">
+    <div class="nav-label">Data Recovery</div>
+    <button class="nav-item active" data-goto="devices"><span data-icon="drive"></span><span class="grow">Storage Devices</span></button>
+    <button class="nav-item" data-goto="scan" id="nav-current" hidden><span data-icon="dashboard"></span><span class="grow" id="nav-current-label">Current scan</span></button>
+    <button class="nav-item" data-goto="saved"><span data-icon="history"></span><span class="grow">Recent Sessions</span><span class="nav-pill" id="nav-saved-pill" hidden></span></button>
+    <div class="nav-label">Extra Tools</div>
+    <button class="nav-item" data-goto="fix"><span data-icon="plug"></span><span class="grow">Fix a Drive</span></button>
+    <button class="nav-item" data-goto="tools"><span data-icon="wrench"></span><span class="grow">Erase a Drive</span></button>
+  </div>
+  <div class="nav-sec" id="nav-scanmode" hidden>
+    <button class="nav-item" data-goto="scan" id="nav-scan"><span data-icon="dashboard"></span><span class="grow" id="nav-scan-label">Dashboard</span><span class="spinner sm" id="nav-scan-spin" hidden></span></button>
+    <div class="nav-label">Scan results</div>
+    <div id="nav-results"></div>
+  </div>
   <div class="grow"></div>
   <div class="nav-foot">
     <div id="admin-chip"></div>
-    <div class="nav-row">
-      <button class="icon-btn" id="theme" title="Light / dark"></button>
-      <span class="ver" id="ver"></span>
-    </div>
+    <div class="nav-status" id="nav-status"></div>
+    <button class="btn nav-wide" id="nav-gallery" data-goto="gallery" hidden><span data-icon="image"></span>Open the Gallery<span class="nav-pill" id="nav-gallery-pill"></span></button>
+    <span class="ver" id="ver" hidden></span>
   </div>
 </nav>
 
@@ -41,127 +60,127 @@
 
   <!-- ============ devices ============ -->
   <section class="screen" id="screen-devices">
-    <header class="page-head">
-      <div>
-        <h1>Data recovery</h1>
-        <p>Choose the drive your files were on. TizoRecover only reads from it, so nothing on it changes.</p>
-      </div>
-      <div class="head-actions">
-        <button class="btn ghost" id="open-scan"><span data-icon="history"></span>Open saved scan</button>
-        <button class="btn ghost" id="open-image"><span data-icon="disc"></span>Open disk image</button>
-        <button class="btn ghost" id="refresh"><span data-icon="refresh"></span>Refresh</button>
-      </div>
-    </header>
-    <div class="happened" id="happened">
-      <span class="happened-q">What happened?</span>
-      <button class="hap" data-hap="deleted"><span data-icon="trash"></span><span><b>I deleted files</b><small>or emptied the Recycle Bin</small></span></button>
-      <button class="hap" data-hap="formatted"><span data-icon="disc"></span><span><b>Formatted or RAW</b><small>"you need to format the disk"</small></span></button>
-      <button class="hap" data-hap="card"><span data-icon="image"></span><span><b>Photos or videos</b><small>camera, phone, memory card</small></span></button>
-      <button class="hap" data-hap="missing"><span data-icon="plug"></span><span><b>Drive doesn't show up</b><small>or keeps disconnecting</small></span></button>
+    <div class="topbar">
+      <span class="tb-count" id="dev-count"></span>
+      <div class="grow"></div>
+      <button class="icon-btn" id="refresh" title="Refresh the drive list"><span data-icon="refresh"></span></button>
     </div>
-    <div class="hap-hint" id="hap-hint" hidden></div>
-    <div class="devtable">
-      <div class="dev-thead"><div>Device / partition</div><div>Type</div><div>File system</div><div class="num">Size</div><div>In use</div></div>
-      <div class="dev-body" id="dev-body"><div class="dev-empty"><span class="spinner"></span>Looking for drives…</div></div>
-    </div>
-    <footer class="dev-foot">
-      <div class="dev-picked" id="dev-picked"></div>
-      <div class="method" id="method">
-        <button class="method-btn" id="method-btn" aria-haspopup="listbox"><span id="method-label">All recovery methods</span><span data-icon="chevdown"></span></button>
-        <div class="method-menu" id="method-menu" role="listbox" hidden>
-          <button role="option" data-mode="deep" class="sel"><b>All recovery methods</b><span>Recommended. Reads the file table for names and folders, then searches all free space by content. Finds the most.</span></button>
-          <button role="option" data-mode="quick"><b>Quick scan</b><span>Only the file table: seconds to minutes. Real names and folders, but misses files the table has forgotten.</span></button>
+    <div class="dev-layout">
+      <div class="dev-main">
+        <div class="devtable">
+          <div class="dev-thead"><div>Device/Disk</div><div>Type</div><div>Connection/FS</div><div class="num">Capacity</div><div></div></div>
+          <div class="dev-body" id="dev-body"><div class="dev-empty"><span class="spinner"></span>Looking for drives…</div></div>
+        </div>
+        <div class="dev-bottom">
+          <button class="link-btn" id="open-image"><span data-icon="pluscircle"></span>Attach disk image…</button>
+          <div class="grow"></div>
+          <label class="switch"><span>Show hidden items</span><input type="checkbox" id="show-hidden"><i></i></label>
         </div>
       </div>
-      <button class="btn lg" id="resume-btn" hidden><span data-icon="history"></span>Resume scan</button>
-      <button class="btn primary lg" id="search-btn" disabled><span data-icon="search"></span>Search for lost data</button>
-    </footer>
+      <aside class="dev-panel" id="dev-panel">
+        <div class="dp-empty" id="dp-empty">
+          <h2>Where to search?</h2>
+          <p>Choose the drive your files were on in the list to see how it can be searched. TizoRecover only reads from it, so nothing on it changes.</p>
+          <p class="dp-fix">Drive not in the list? <button class="link-btn" data-goto="fix">Fix a drive</button></p>
+        </div>
+        <div class="dp-drive" id="dp-drive" hidden>
+          <div class="dp-ico" id="dp-ico"></div>
+          <h2 id="dp-name"></h2>
+          <p class="dp-sub" id="dp-sub"></p>
+          <button class="btn primary lg dp-go" id="search-btn" disabled>Search for lost data</button>
+          <div class="dp-field">
+            <label>Recovery method</label>
+            <div class="method" id="method">
+              <button class="method-btn" id="method-btn" aria-haspopup="listbox"><span id="method-label">All recovery methods</span><span data-icon="chevdown"></span></button>
+              <div class="method-menu" id="method-menu" role="listbox" hidden>
+                <button role="option" data-mode="deep" class="sel"><b>All recovery methods</b><span>Recommended. Reads the file table for names and folders, then searches all free space by content. Finds the most.</span></button>
+                <button role="option" data-mode="quick"><b>Quick scan</b><span>Only the file table: seconds to minutes. Real names and folders, but misses files the table has forgotten.</span></button>
+              </div>
+            </div>
+          </div>
+          <div class="happened" id="happened">
+            <span class="happened-q">What happened?</span>
+            <button class="hap" data-hap="deleted"><span data-icon="trash"></span><span><b>I deleted files</b><small>or emptied the Recycle Bin</small></span></button>
+            <button class="hap" data-hap="formatted"><span data-icon="disc"></span><span><b>Formatted or RAW</b><small>"you need to format the disk"</small></span></button>
+            <button class="hap" data-hap="card"><span data-icon="image"></span><span><b>Photos or videos</b><small>camera, phone, memory card</small></span></button>
+            <button class="hap" data-hap="missing"><span data-icon="plug"></span><span><b>Drive doesn't show up</b><small>or keeps disconnecting</small></span></button>
+          </div>
+          <div class="hap-hint" id="hap-hint" hidden></div>
+          <button class="dp-session" id="resume-btn" hidden></button>
+          <div class="dp-note" id="dp-note"></div>
+          <div class="dp-props" id="dp-props"></div>
+          <div class="dp-actions" id="dp-actions"></div>
+        </div>
+      </aside>
+    </div>
   </section>
 
   <!-- ============ scanning ============ -->
   <section class="screen" id="screen-scan" hidden>
-    <header class="page-head slim">
-      <div class="head-title">
-        <div class="dev-ico lg" id="sc-icon"></div>
-        <div>
-          <h1 id="sc-title">Scanning</h1>
-          <p id="sc-sub"></p>
-        </div>
+    <div class="topbar">
+      <button class="icon-btn" data-goto="devices" title="Storage devices"><span data-icon="home"></span></button>
+      <button class="icon-btn" id="sc-stop" title="Stop scan"><span data-icon="stop"></span></button>
+      <div class="grow"></div>
+      <button class="btn" id="sc-recover">Recover all…</button>
+      <button class="btn primary" id="sc-review">Review found items</button>
+    </div>
+    <div class="tb-progress" id="sc-progress"><div id="sc-bar"></div></div>
+    <div class="dash">
+      <h1 id="sc-title">Scanning</h1>
+      <p class="dash-sub" id="sc-sub"></p>
+      <div class="dash-tiles" id="sc-tiles"></div>
+      <div class="dash-msgs" id="sc-problems"></div>
+      <div class="dash-more">
+        <button class="btn" id="sc-deeper" hidden><span data-icon="search"></span>Search deeper (all recovery methods)</button>
       </div>
-      <div class="head-actions">
-        <button class="btn ghost" id="sc-stop"><span data-icon="stop"></span>Stop scan</button>
-      </div>
-    </header>
-    <div class="scan-body">
-      <div class="scan-hero">
-        <div class="ring" id="sc-ring">
-          <svg viewBox="0 0 120 120"><circle class="ring-bg" cx="60" cy="60" r="52"/><circle class="ring-fg" id="sc-arc" cx="60" cy="60" r="52"/></svg>
-          <div class="ring-center"><div class="ring-pct" id="sc-pct">0%</div><div class="ring-cap" id="sc-cap">Starting</div></div>
-        </div>
-        <div class="scan-side">
-          <ol class="steps" id="sc-steps"></ol>
-          <div class="stats">
-            <div><span>Elapsed</span><b id="st-elapsed">0s</b></div>
-            <div><span>Remaining</span><b id="st-eta">—</b></div>
-            <div><span>Scanned</span><b id="st-done">—</b></div>
-            <div><span>Speed</span><b id="st-speed">—</b></div>
-          </div>
-          <div class="autosave-note" id="sc-autosave" hidden></div>
-          <div id="sc-problems"></div>
-        </div>
-      </div>
-      <div class="found-head"><h2>Found so far</h2><span id="sc-found-total"></span></div>
-      <div class="tiles" id="sc-tiles"></div>
-      <div class="scan-cta">
-        <div class="scan-done-note" id="sc-done-note"></div>
-        <button class="btn lg" id="sc-deeper" hidden><span data-icon="search"></span>Search deeper</button>
-        <button class="btn primary lg" id="sc-review"><span data-icon="files"></span>Review found items</button>
-      </div>
+    </div>
+    <div class="dash-foot"><span id="sc-status"></span><span class="grow"></span><span id="sc-autosave" hidden></span></div>
+    <div class="tip" id="sc-tip" hidden>
+      <span class="tip-ico"><span data-icon="eye"></span></span>
+      <div class="grow"><b id="sc-tip-title"></b><p id="sc-tip-text"></p></div>
+      <button class="icon-btn" id="sc-tip-close" title="Hide tips"><span data-icon="x"></span></button>
     </div>
   </section>
 
   <!-- ============ review ============ -->
   <section class="screen" id="screen-review" hidden>
-    <header class="rv-head">
-      <div class="head-title">
-        <div class="dev-ico" id="rv-icon"></div>
-        <div class="rv-titles">
-          <h1 id="rv-title"></h1>
-          <p id="rv-sub"></p>
+    <header class="rv-head2">
+      <div class="rv-top">
+        <button class="icon-btn home-btn" data-goto="devices" title="Storage devices"><span data-icon="home"></span></button>
+        <button class="scan-pill" id="rv-scanpill" hidden><span class="pill-bar"><span id="rv-pillbar"></span></span><span id="rv-pilltext"></span></button>
+        <div class="grow"></div>
+        <div class="seg" id="view-seg">
+          <button data-view="tree" class="active" title="List"><span data-icon="list"></span></button>
+          <button data-view="grid" title="Thumbnails"><span data-icon="grid"></span></button>
         </div>
+        <button class="icon-btn" id="pv-toggle" title="Show or hide the preview"><span data-icon="panel"></span></button>
+        <div class="search"><span data-icon="search"></span><input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false"></div>
       </div>
-      <button class="scan-pill" id="rv-scanpill" hidden><span class="pill-bar"><span id="rv-pillbar"></span></span><span id="rv-pilltext"></span></button>
-      <div class="grow"></div>
-      <div class="search"><span data-icon="search"></span><input id="q" type="search" placeholder="Search file names" autocomplete="off" spellcheck="false"></div>
-      <div class="pop-wrap">
-        <button class="btn ghost" id="filter-btn"><span data-icon="filter"></span>Filters<span class="badge-n" id="filter-n" hidden></span></button>
-        <div class="popover" id="filter-pop" hidden>
-          <div class="pop-sec"><h4>Recovery chances</h4><div id="f-chances"></div></div>
-          <div class="pop-sec"><h4>Size</h4><select id="f-size">
+      <div class="rv-titles2"><div class="dev-ico" id="rv-icon" hidden></div><h1 id="rv-title"></h1><p id="rv-sub"></p></div>
+      <div class="chips" id="rv-chips">
+        <div class="pop-wrap"><button class="fchip" id="chip-show"><span data-icon="sliders"></span><span class="fl">Show</span><span data-icon="chevdown"></span></button>
+          <div class="popover" id="pop-show" hidden></div></div>
+        <div class="pop-wrap"><button class="fchip" id="chip-type"><span data-icon="image"></span><span class="fl">File type</span></button>
+          <div class="popover" id="pop-type" hidden></div></div>
+        <div class="pop-wrap"><button class="fchip" id="chip-size"><span data-icon="file"></span><span class="fl">File size</span></button>
+          <div class="popover" id="pop-size" hidden><div class="pop-sec"><h4>File size</h4><select id="f-size">
             <option value="">Any size</option><option value="0-1048576">Under 1 MB</option>
             <option value="1048576-104857600">1 MB – 100 MB</option><option value="104857600-1073741824">100 MB – 1 GB</option>
-            <option value="1073741824-">Over 1 GB</option></select></div>
-          <div class="pop-sec"><h4>Date modified</h4><select id="f-date">
+            <option value="1073741824-">Over 1 GB</option></select></div></div></div>
+        <div class="pop-wrap"><button class="fchip" id="chip-date"><span data-icon="calendar"></span><span class="fl">Date modified</span></button>
+          <div class="popover" id="pop-date" hidden><div class="pop-sec"><h4>Date modified</h4><select id="f-date">
             <option value="">Any time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option>
-            <option value="365">Last 12 months</option><option value="-365">More than a year ago</option><option value="none">Unknown date</option></select></div>
-          <div class="pop-foot"><button class="btn ghost sm" id="f-reset">Reset</button><button class="btn sm" id="f-close">Done</button></div>
-        </div>
-      </div>
-      <div class="seg" id="view-seg">
-        <button data-view="tree" class="active" title="Folders"><span data-icon="list"></span></button>
-        <button data-view="grid" title="Thumbnails"><span data-icon="grid"></span></button>
+            <option value="365">Last 12 months</option><option value="-365">More than a year ago</option><option value="none">Unknown date</option></select></div></div></div>
+        <div class="pop-wrap"><button class="fchip" id="chip-chances"><span data-icon="star"></span><span class="fl">Recovery chances</span></button>
+          <div class="popover" id="pop-chances" hidden><div class="pop-sec"><h4>Recovery chances</h4><div id="f-chances"></div></div></div></div>
+        <div class="grow"></div>
+        <button class="link-btn" id="f-reset" hidden>Reset all</button>
       </div>
     </header>
 
     <div class="rv-body">
       <aside class="types" id="types"></aside>
       <div class="rv-main">
-        <div class="tabs" id="rv-tabs">
-          <button data-tab="named" class="active"><span data-icon="trash"></span>Deleted or lost<span class="tab-n" id="tab-n-named"></span></button>
-          <button data-tab="carved"><span data-icon="sparkle"></span>Reconstructed<span class="tab-n" id="tab-n-carved"></span></button>
-          <div class="grow"></div>
-          <div class="tab-info" id="tab-info"></div>
-        </div>
         <div class="table">
           <div class="thead" id="thead">
             <div class="c-check"><input type="checkbox" class="check" id="check-all" title="Select everything shown"></div>
@@ -174,7 +193,8 @@
           <div class="viewport" id="viewport"><div class="spacer" id="spacer"></div><div class="empty" id="empty" hidden></div></div>
         </div>
       </div>
-      <aside class="preview" id="preview" hidden>
+      <aside class="preview empty" id="preview">
+        <div class="pv-empty" id="pv-empty"><div class="pv-empty-art"></div><p>Select a file to preview it</p></div>
         <div class="pv-head">
           <div class="pv-titles"><div class="pv-name" id="pv-name"></div><div class="pv-path" id="pv-path"></div></div>
           <button class="icon-btn" id="pv-wide" title="Larger preview"><span data-icon="expand"></span></button>
@@ -195,13 +215,15 @@
       <button class="btn ghost sm" id="select-high">Select all with high chances</button>
       <button class="btn ghost sm" id="select-none">Clear selection</button>
       <div class="grow"></div>
-      <button class="btn primary lg" id="recover-btn" disabled><span data-icon="download"></span>Recover</button>
+      <span class="sel-sum" id="sel-sum"></span>
+      <button class="btn primary" id="recover-btn">Recover all…</button>
     </footer>
   </section>
 
   <!-- ============ gallery ============ -->
   <section class="screen" id="screen-gallery" hidden>
     <header class="rv-head gal-head">
+      <button class="icon-btn home-btn" data-goto="devices" title="Storage devices"><span data-icon="home"></span></button>
       <div class="rv-titles"><h1>Gallery</h1><p id="gal-count"></p></div>
       <div class="grow"></div>
       <div class="seg gal-kind" id="gal-kind">
