@@ -25,7 +25,7 @@ from tizorecover.engine.access import CandidateData, pieces_of
 from tizorecover.engine.blockdev import (BlockReader, DeviceBlockReader, DriveGoneError, VolumeAccessError,
                                          WindowBlockReader, open_source)
 from tizorecover.engine.carver import carve_range
-from tizorecover.engine.drives import Drive
+from tizorecover.engine.drives import Drive, list_drives
 from tizorecover.engine.formats import ByteSourceView
 from tizorecover.engine.partitions import PatchedReader
 from tizorecover.engine.fs import exfat as exfat_fs
@@ -157,11 +157,14 @@ class ScanJob:
         self.free_bytes = 0
         self.reader: BlockReader | None = None
         self.drive_gone = False
+        self.paused = False
         self.src: LockedSource | None = None
         self.allocation = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._fs_starts: dict[int, Item] = {}
+        self.ghosts: list[dict] = []          # names a folder index still remembers (NTFS $I30 slack)
+        self._ghost_by_key: dict[tuple[int, str], dict] = {}
         self.thread = threading.Thread(target=self._run, name="tizo-scan", daemon=True)
 
     def start(self) -> "ScanJob":
@@ -206,7 +209,7 @@ class ScanJob:
                 "progress": self.progress.to_dict(), "problems": list(self.problems),
                 "free_bytes": self.free_bytes, "autosave": bool(self.autosave),
                 "resumed_from": self.resumed_from, "bad_bytes": self.bad_bytes(),
-                "drive_gone": self.drive_gone}
+                "drive_gone": self.drive_gone, "paused": self.paused}
 
     def _device(self):
         """The raw device reader under any partition window or boot patch, if there is one."""
@@ -240,6 +243,7 @@ class ScanJob:
             "quick_done": self.quick_done, "problems": list(self.problems),
             "free_bytes": self.free_bytes,
             "deep": {"done": deep_done, "total": self.deep_total, "last_carve_end": self.last_carve_end},
+            "ghosts": self.ghosts,
             "items": items,
         }
         try:
@@ -263,6 +267,38 @@ class ScanJob:
             except OSError:
                 pass
             self.reader = None
+
+    def _set_ghosts(self, ghosts: list[dict]) -> None:
+        """Keep the index leftovers whose size + type is unique: only those can be matched safely."""
+        self.ghosts = ghosts
+        counts: dict[tuple[int, str], int] = {}
+        for g in ghosts:
+            key = (int(g["size"]), (g.get("ext") or "").lower())
+            counts[key] = counts.get(key, 0) + 1
+        self._ghost_by_key = {(int(g["size"]), (g.get("ext") or "").lower()): g for g in ghosts
+                              if g["size"] > 0 and counts[(int(g["size"]), (g.get("ext") or "").lower())] == 1}
+
+    def _name_from_ghost(self, candidate: FileCandidate) -> bool:
+        """A carved file whose exact size and type match one leftover index entry gets its name and folder back."""
+        if not self._ghost_by_key:
+            return False
+        ext = (candidate.ext or "").lower()
+        ext = {"jpeg": "jpg", "tiff": "tif"}.get(ext, ext)
+        g = None
+        for e in {ext, {"jpg": "jpeg", "tif": "tiff"}.get(ext, ext)}:
+            g = self._ghost_by_key.pop((int(candidate.size), e), None)
+            if g is not None:
+                break
+        if g is None:
+            return False
+        candidate.name = g["name"]
+        candidate.original_path = g["path"]
+        candidate.metadata["named_from"] = "ntfs-index"
+        if g.get("modified") and not candidate.metadata.get("modified"):
+            candidate.metadata["modified"] = g["modified"]
+        candidate.reasons.append("name and folder from the folder's index (NTFS $I30 leftovers), "
+                                 "matched by exact size and type")
+        return True
 
     def _name_from_content(self, candidate: FileCandidate) -> None:
         """A carved file named by what it says about itself (EXIF date + camera, ID3, title...)."""
@@ -303,7 +339,8 @@ class ScanJob:
         except (OSError, ValueError) as exc:
             status, notes = verify.PARTIAL, [f"could not check: {exc}"]
         if candidate.strategy is Strategy.CARVE and not candidate.original_path:
-            self._name_from_content(candidate)
+            if not self._name_from_ghost(candidate):
+                self._name_from_content(candidate)
         with self._lock:
             item = Item(len(self.items), candidate, status, notes,
                         verify.category_of(candidate.ext))
@@ -313,6 +350,85 @@ class ScanJob:
             self.last_carve_end = max(self.last_carve_end, candidate.data_offset + candidate.size)
         if self.on_item is not None:
             self.on_item(item)
+
+    def _pause_until_back(self, exc: Exception) -> bool:
+        """The drive went away mid-scan. Save, wait for it (or Stop), reopen it, resume in place.
+
+        True: it is back and the scan continues. False: Stop was pressed while waiting.
+        The same drive is recognised by its fingerprint, not its letter or disk number,
+        which can both change when it is plugged in again.
+        """
+        log = logging.getLogger("tizorecover")
+        log.warning("drive gone during scan of %s: %s -- pausing", self.drive.path, exc)
+        deep_done = self.progress.done if self.progress.stage == "deep" else 0
+        stage = self.progress.stage
+        if self.autosave and self.items:
+            self.save()
+        self.paused = True
+        self.state = "paused"
+        self.progress.stage = "paused"
+        old = self.reader
+        self.reader = None
+        try:
+            if old is not None:
+                old.close()
+        except OSError:
+            pass
+        while not self._stop.wait(3.0):
+            fresh = self._find_again()
+            if fresh is None:
+                continue
+            drive, reader = fresh
+            log.info("drive back as %s, scan continues", drive.path)
+            self.drive = drive
+            self.reader = reader
+            self.src = LockedSource(ByteSourceView(reader))
+            self.paused = False
+            self.state = "running"
+            if not self.quick_done:
+                self._forget_quick_items()        # the quick pass runs again from the start
+                self._stage("records", 0)
+            else:
+                self.resume = {**(self.resume or {}), "mode": DEEP, "deep": {"done": deep_done}}
+                self.progress.stage = stage
+            return True
+        self.paused = False
+        return False
+
+    def _find_again(self):
+        """(drive, reader) when the drive this scan was reading is back, else None."""
+        d = self.drive
+        try:
+            if d.kind == "image":
+                options = [d] if os.path.exists(d.path) else []
+            else:
+                options = [x for x in list_drives() if x.size == d.size and x.kind == d.kind
+                           and x.partition == d.partition and (x.disk_name == d.disk_name or not d.disk_name)]
+        except Exception:  # noqa: BLE001 - listing drives can fail while Windows re-enumerates
+            return None
+        for cand in options:
+            if d.lost:
+                cand = d.__class__(**{**d.to_dict(), "path": cand.path if cand.kind != "image" else d.path})
+            try:
+                reader = open_drive(cand)
+            except (OSError, VolumeAccessError):
+                continue
+            try:
+                same = tzscan.fingerprint(LockedSource(ByteSourceView(reader))) == self.fingerprint
+            except OSError:
+                same = False
+            if same:
+                return cand, reader
+            try:
+                reader.close()
+            except OSError:
+                pass
+        return None
+
+    def _forget_quick_items(self) -> None:
+        with self._lock:
+            self.items = []
+        self._fs_starts = {}
 
     def _index(self, item: Item) -> None:
         pieces = pieces_of(item.candidate)
@@ -341,6 +457,8 @@ class ScanJob:
         self.quick_done = bool(saved.get("quick_done"))
         self.last_carve_end = int((saved.get("deep") or {}).get("last_carve_end") or 0)
         self.resumed_from = saved.get("saved_at")
+        used = {it.candidate.original_path for it in self.items if it.candidate.original_path}
+        self._set_ghosts([g for g in saved.get("ghosts") or [] if g.get("path") not in used])
         return True
 
     def _run(self) -> None:
@@ -368,11 +486,18 @@ class ScanJob:
                     self.state = "done"
                     self.progress.stage = "done"
                     return
-            if not self.quick_done:
-                self._quick()
-                self.quick_done = not self.stopping
-            if self.mode == DEEP and not self.stopping:
-                self._deep()
+            while True:
+                try:
+                    if not self.quick_done:
+                        self._quick()
+                        self.quick_done = not self.stopping
+                    if self.mode == DEEP and not self.stopping:
+                        self._deep()
+                    break
+                except DriveGoneError as exc:
+                    # Pause, don't fail: wait for the same drive to come back and carry on from here.
+                    if not self._pause_until_back(exc):
+                        break
             self.state = "stopped" if self.stopping else "done"
         except VolumeAccessError as exc:
             self.problems.append(str(exc))
@@ -380,8 +505,8 @@ class ScanJob:
         except DriveGoneError as exc:
             logging.getLogger("tizorecover").warning("drive gone during scan of %s: %s", self.drive.path, exc)
             self.drive_gone = True
-            self.problems.append("The drive disconnected during the scan. Everything found so far is kept and "
-                                 "saved: plug it back in (same port), then choose Resume.")
+            self.problems.append("The drive disconnected while it was being opened. Plug it back in, then "
+                                 "choose Resume (or start the scan again).")
             self.state = "failed"
         except Exception as exc:  # the UI must hear about it, whatever it is
             logging.getLogger("tizorecover").exception("scan of %s failed", self.drive.path)
@@ -408,9 +533,11 @@ class ScanJob:
             mft_map = ntfs_fs.MftMap.locate(self.src, boot, mft) if mft is not None else None
             total = len(mft_map) * boot.mft_record_size if mft_map else 0
             self._stage("records", total)
+            ghosts: list[dict] = []
             for cand in ntfs_fs.recover_ntfs(self.src, self.drive.id, progress=self._advance,
-                                             should_stop=stop, include_live=self.drive.lost):
+                                             should_stop=stop, include_live=self.drive.lost, ghosts=ghosts):
                 self._add(cand)
+            self._set_ghosts(ghosts)
             if not self.stopping:
                 self.progress.done = self.progress.total
         elif fs in ("fat", "fat32"):

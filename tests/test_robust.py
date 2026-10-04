@@ -220,7 +220,98 @@ def test_stop_stops():
     os.unlink(fh.name)
 
 
+def test_disconnect_pauses_and_continues():
+    print("a drive that disconnects pauses the scan, which carries on when it is back")
+    import time
+    from tizorecover.engine import session as session_mod
+    from tests.test_session import noisy_png
+    raw = bytearray(24 << 20)
+    for k in range(12):                                   # pictures spread over the whole image
+        pic = noisy_png(80 + k * 7, 60, k)
+        raw[(k * 2 << 20) + 4096:(k * 2 << 20) + 4096 + len(pic)] = pic
+    fh = tempfile.NamedTemporaryFile(suffix=".img", delete=False)
+    fh.write(bytes(raw))
+    fh.close()
+
+    ref = ScanJob(image_drive(fh.name), DEEP).start()
+    ref.wait(60)
+    want = sorted((it.candidate.data_offset, it.candidate.size) for it in ref.snapshot())
+    ref.close()
+
+    real_open = session_mod.open_drive
+    state = {"opens": 0}
+
+    class Dropping:
+        """The first time the drive is opened, it vanishes after a few reads (unplugged)."""
+        def __init__(self, inner):
+            self.inner, self.size, self.label, self.reads = inner, inner.size, inner.label, 0
+
+        def read(self, offset, length):
+            self.reads += 1
+            if self.reads > 6:
+                raise DriveGoneError(1167, "device not connected", fh.name)
+            return self.inner.read(offset, length)
+
+        def read_at(self, offset, length):
+            data = self.read(offset, min(length, self.size - offset)) if offset < self.size else b""
+            return data + b"\x00" * (min(length, max(0, self.size - offset)) - len(data))
+
+        def close(self):
+            self.inner.close()
+
+    def flaky_open(drive):
+        state["opens"] += 1
+        r = real_open(drive)
+        return Dropping(r) if state["opens"] == 1 else r
+
+    session_mod.open_drive = flaky_open
+    try:
+        job = ScanJob(image_drive(fh.name), DEEP).start()
+        paused_seen = False
+        for _ in range(200):
+            if job.state == "paused":
+                paused_seen = True
+            if job.state in ("done", "failed", "stopped"):
+                break
+            time.sleep(0.05)
+        job.wait(60)
+    finally:
+        session_mod.open_drive = real_open
+    got = sorted((it.candidate.data_offset, it.candidate.size) for it in job.snapshot())
+    check("it paused instead of failing", paused_seen and job.state == "done", f"paused={paused_seen} end={job.state}")
+    check("reopened by itself when the drive was back", state["opens"] >= 2, str(state["opens"]))
+    check("same files as a scan without the disconnect", got == want, f"{len(got)} vs {len(want)}")
+    job.close()
+
+    # Stop while paused ends the scan as stopped
+    state["opens"] = 0
+    gone = {"on": True}
+
+    def never_back(drive):
+        state["opens"] += 1
+        if state["opens"] == 1:
+            return Dropping(real_open(drive))
+        raise OSError(2, "not there")
+
+    session_mod.open_drive = never_back
+    try:
+        job = ScanJob(image_drive(fh.name), DEEP).start()
+        for _ in range(100):
+            if job.state == "paused":
+                break
+            time.sleep(0.05)
+        t = time.time()
+        job.stop()
+        job.wait(10)
+    finally:
+        session_mod.open_drive = real_open
+    check("Stop while paused stops at once", job.state == "stopped" and time.time() - t < 2, f"{job.state}")
+    job.close()
+    os.unlink(fh.name)
+
+
 def main() -> int:
+    test_disconnect_pauses_and_continues()
     test_stop_stops()
     test_bad_sectors_and_vanishing_drive()
     test_damaged_file_systems()

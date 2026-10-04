@@ -39,7 +39,7 @@ def attr_resident(atype: int, value: bytes, name: str = "", indexed: bool = Fals
     total = head + len(name_b) + len(value)
     total = (total + 7) & ~7
     out = bytearray(total)
-    struct.pack_into("<IIBBHHH", out, 0, atype, total, 0, len(name_b), head if name_b else 0, 0, 0)
+    struct.pack_into("<IIBBHHH", out, 0, atype, total, 0, len(name), head if name_b else 0, 0, 0)  # length in characters
     struct.pack_into("<IHB", out, 0x10, len(value), head + len(name_b), 1 if indexed else 0)
     out[head:head + len(name_b)] = name_b
     out[head + len(name_b):head + len(name_b) + len(value)] = value
@@ -85,7 +85,7 @@ def attr_nonresident(atype: int, runs: list[tuple[int, int]], real_size: int,
     total = head + len(name_b) + len(runlist)
     total = (total + 7) & ~7
     out = bytearray(total)
-    struct.pack_into("<IIBBHHH", out, 0, atype, total, 1, len(name_b), head if name_b else 0, 0, 0)
+    struct.pack_into("<IIBBHHH", out, 0, atype, total, 1, len(name), head if name_b else 0, 0, 0)  # length in characters
     last_vcn = start_vcn + sum(c for _l, c in runs) - 1
     struct.pack_into("<Q", out, 0x10, start_vcn)
     struct.pack_into("<q", out, 0x18, last_vcn)

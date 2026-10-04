@@ -1,0 +1,62 @@
+{
+ "DCIM/Photos/IMG_1010.png": {
+  "size": 13618,
+  "sha256": "3f88309e28f4e7e769e2c7c79415be861e8f9ac284f7aed2115866e8d356720c"
+ },
+ "DCIM/Photos/IMG_1011.png": {
+  "size": 14348,
+  "sha256": "e856d1a0cfc88e102ed40e0407fca3b2651b692ab6f89228d66f5ac451fa0506"
+ },
+ "DCIM/Photos/IMG_1012.png": {
+  "size": 15096,
+  "sha256": "140dd4580d33eea915e1453fadb2add1c15dfb10a9518b157f97e3fa7ea09fe5"
+ },
+ "DCIM/Photos/IMG_1013.png": {
+  "size": 15862,
+  "sha256": "e4d5ef47b747af8e9e1de3c4055a4dcf4fc8dc3b9a72e09b05276b8ef3280422"
+ },
+ "DCIM/Photos/IMG_1014.png": {
+  "size": 16646,
+  "sha256": "482fc8d8bad09952c9a199f463ed893493f222e3bb8c878baf6bbbb901eb4bb9"
+ },
+ "DCIM/Photos/IMG_1031.png": {
+  "size": 32728,
+  "sha256": "dce0e27fd7c83d66e119a6e2aa7601c87eabe07059f021643946ec3aab2f8371"
+ },
+ "DCIM/Photos/IMG_1032.png": {
+  "size": 33836,
+  "sha256": "c0f76487aae861606787f083289a2d3ac8222e807dc1f50dc8579544f255b086"
+ },
+ "DCIM/Photos/IMG_1033.png": {
+  "size": 34962,
+  "sha256": "c48ae519cca6cc704f06de4a8818b1f66799963e99af9c8e61602bebe7a5d9c5"
+ },
+ "DCIM/Photos/IMG_1034.png": {
+  "size": 36106,
+  "sha256": "7b94b3a417ba8cbcf1df9a26b984ecdaa3cea711037b93002ba8c24ccf76582c"
+ },
+ "DCIM/Photos/IMG_1035.png": {
+  "size": 37268,
+  "sha256": "0a46d883f5927cddcb3ed6bb4d86eaf7277911fd0fd04d7d25da63958e9795be"
+ },
+ "DCIM/Photos/IMG_1036.png": {
+  "size": 38448,
+  "sha256": "69e593fd7b2e479a0179febde2280e62f0f152b15ec12a5ca3fa787149b0d3e7"
+ },
+ "DCIM/Photos/IMG_1037.png": {
+  "size": 39646,
+  "sha256": "b082a37c6fdea748544c4df6075a8a2edf3199578257125c158c4dff8a33267d"
+ },
+ "DCIM/Photos/IMG_1038.png": {
+  "size": 40862,
+  "sha256": "5c7e1c6c770f6a22644f72e065120338d929f506ad89a3d960048279182b03cd"
+ },
+ "DCIM/Photos/IMG_1039.png": {
+  "size": 42096,
+  "sha256": "761a4a04a62fe99e174eee0675483bae3ba3c5db4000724658fcb0f55209004c"
+ },
+ "DCIM/Photos/IMG_1040.png": {
+  "size": 43348,
+  "sha256": "974e877b9d3bd95d98d81560fda94df710a40469b0ffd003b43f4ce5b8670e78"
+ }
+}

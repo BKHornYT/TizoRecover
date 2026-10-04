@@ -178,7 +178,7 @@ const CAT_LABEL = { image: "Pictures", video: "Video", audio: "Audio", document:
 const CAT_ONE = { image: "Picture", video: "Video", audio: "Audio", document: "Document", archive: "Archive", code: "Code", program: "Program", other: "File" };
 const TILE_CATS = ["image", "video", "audio", "document", "archive", "other"];
 const tileCat = (c) => (TILE_CATS.includes(c) ? c : "other");
-const STAGE_LABEL = { starting: "Starting", opening: "Opening the drive", records: "Reading the file table", deep: "Searching free space", done: "Finished", stopped: "Stopped", failed: "Failed" };
+const STAGE_LABEL = { paused: "Paused", starting: "Starting", opening: "Opening the drive", records: "Reading the file table", deep: "Searching free space", done: "Finished", stopped: "Stopped", failed: "Failed" };
 const catStyle = (c) => `style="--cc:var(--c-${c})"`;
 
 /* ---------- theme ---------- */
@@ -896,7 +896,9 @@ $("#open-image").onclick = async () => {
 };
 
 /* ---------- scanning ---------- */
-const running = () => S.scan && (S.scan.state === "running" || S.scan.state === "starting");
+// "paused" counts as running: the scan is alive, waiting for its drive to come back (Stop still works).
+const running = () => S.scan && (S.scan.state === "running" || S.scan.state === "starting" || S.scan.state === "paused");
+const paused = () => S.scan && S.scan.state === "paused";
 
 async function startScan(driveId, mode, opts = {}) {
   if (running() && !(await ask("Stop the current scan?", "A scan is still running. Starting another one stops it. Its progress stays saved.", "Stop and continue"))) return;
@@ -1005,7 +1007,7 @@ function renderNav() {
   const s = S.scan;
   if (!s) return;
   const live = running();
-  $("#nav-scan-label").textContent = live ? "Scanning…" : s.state === "done" ? "Scan complete" : s.state === "failed" ? "Scan failed" : "Scan stopped";
+  $("#nav-scan-label").textContent = paused() ? "Paused" : live ? "Scanning…" : s.state === "done" ? "Scan complete" : s.state === "failed" ? "Scan failed" : "Scan stopped";
   const pill = $("#nav-scan-pill");
   pill.textContent = live ? `${Math.floor(overallPct(s))}%` : "";
   pill.hidden = !live;
@@ -1022,7 +1024,7 @@ function renderScan() {
   const d = s.drive || {};
   const live = running();
   driveIconBox(d, $("#sc-icon"));
-  $("#sc-title").textContent = live ? `Scanning ${driveTitle(d)}` : s.state === "done" ? `Scan of ${driveTitle(d)} complete` : s.state === "failed" ? "The scan could not run" : `Scan of ${driveTitle(d)} stopped`;
+  $("#sc-title").textContent = paused() ? `Paused: waiting for ${driveTitle(d)}` : live ? `Scanning ${driveTitle(d)}` : s.state === "done" ? `Scan of ${driveTitle(d)} complete` : s.state === "failed" ? "The scan could not run" : `Scan of ${driveTitle(d)} stopped`;
   $("#sc-sub").textContent = [s.mode === "deep" ? "All recovery methods" : "Quick scan", fsName(s.filesystem), size(d.size)].join(" · ");
   const p = s.progress;
   const pct = overallPct(s);
@@ -1059,6 +1061,7 @@ function renderScan() {
     note.innerHTML = `${icon("history")}<span>${s.resumed_from ? `Resumed a scan saved ${ago(s.resumed_from)}. ` : ""}${live ? "Progress is saved every minute: stop any time and resume later from the drive list." : "Saved. Reopen these results any time from the drive list."}</span>`;
   }
   const badNow = s.bad_bytes && live ? [`${size(s.bad_bytes)} could not be read so far (bad sectors). They are skipped; the scan carries on.`] : [];
+  if (s.state === "paused") badNow.unshift("The drive disconnected. The scan is paused and everything found so far is kept: plug it back in (the same port is best) and it carries on by itself.");
   $("#sc-problems").innerHTML = [...badNow, ...s.problems].map((x) => `<div class="msg ${s.state === "failed" ? "bad" : "warn"}">${icon("alert")}<span>${esc(x)}</span></div>`).join("");
 
   const counts = {}, bytes = {};

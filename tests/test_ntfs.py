@@ -383,14 +383,16 @@ def test_attribute_list_is_followed():
     return failures
 
 
-def test_attribute_name_length_is_bytes():
-    print("ntfs: a named attribute's name is not over-read")
+def test_attribute_name_length_is_chars():
+    # The name length is in UTF-16 characters (proven on a real ntfs-3g volume: "$I30" has length 4,
+    # read as bytes it came out "$I"). Deadfile's builder and parser both used bytes.
+    print("ntfs: a named attribute's name is read whole")
     failures: list[str] = []
     attr = fsimages.attr_nonresident(fsimages.N.ATTR_DATA, [(300, 1)], 4096,
                                      fsimages.CLUSTER, name="$J")
     parsed = ntfs.parse_attribute_at(attr, 0)
     ok = parsed is not None and parsed.name == "$J"
-    print(f"  {'ok  ' if ok else 'FAIL'} name={parsed.name if parsed else None!r}")
+    print(f"  {'ok  ' if ok else 'FAIL'} name={ascii(parsed.name) if parsed else None}")
     if not ok:
         failures.append("name-bytes")
     return failures
@@ -410,7 +412,7 @@ def main() -> int:
         test_batched_walk_matches_single_reads,
         test_deleted_parent_folder_still_resolves_paths,
         test_attribute_list_is_followed,
-        test_attribute_name_length_is_bytes,
+        test_attribute_name_length_is_chars,
     ):
         failures.extend(test())
     print()

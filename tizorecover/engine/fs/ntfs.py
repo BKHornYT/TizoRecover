@@ -20,6 +20,10 @@ ATTR_STANDARD_INFORMATION = 0x10
 ATTR_ATTRIBUTE_LIST = 0x20
 ATTR_FILE_NAME = 0x30
 ATTR_DATA = 0x80
+ATTR_INDEX_ROOT = 0x90
+ATTR_INDEX_ALLOCATION = 0xA0
+_FT_MIN = 119600064000000000      # 1980-01-01 as a FILETIME
+_FT_MAX = 157469184000000000      # 2100-01-01
 FLAG_IN_USE = 0x0001
 FLAG_DIRECTORY = 0x0002
 SYSTEM_EXTENTS = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
@@ -146,7 +150,7 @@ def follow_attribute_list(src, boot: BootSector, mft_lcn: int, index: int,
             break
         target = reference & 0x0000FFFFFFFFFFFF
         if name_len and name_off:
-            want = blob[pos + name_off: pos + name_off + name_len].decode(
+            want = blob[pos + name_off: pos + name_off + name_len * 2].decode(
                 "utf-16-le", "replace")
         else:
             want = ""
@@ -215,7 +219,7 @@ def parse_attribute_at(record: bytes, pos: int) -> Attribute | None:
                      compressed=bool(attr_flags & 0x0001))
     attr.length = alen
     if name_len:
-        raw = record[pos + name_off: pos + name_off + name_len]
+        raw = record[pos + name_off: pos + name_off + name_len * 2]     # length is in characters
         attr.name = raw.decode("utf-16-le", "replace")
     if not non_resident:
         vlen = struct.unpack_from("<I", record, pos + 0x10)[0]
@@ -576,6 +580,7 @@ def recover_ntfs(
     max_entries: int | None = None,
     read_data: bool = False,
     include_live: bool = False,
+    ghosts: list | None = None,
 ) -> Iterator[FileCandidate]:
     """Walk the $MFT and yield every deleted file still described in it.
 
@@ -603,6 +608,8 @@ def recover_ntfs(
     if max_entries is not None:
         total_records = min(total_records, max_entries)
     dirs: dict[int, tuple[int, str, bool]] = {}
+    dir_entries: list[MftEntry] = []
+    records: dict[int, tuple[int, bool]] = {}          # index -> (sequence, in use)
     found: list[tuple[int, MftEntry, int, str, Attribute]] = []
     for index, entry in enumerate(
             iter_mft_entries(src, boot, mft_lcn, total_records, mft_map)):
@@ -612,6 +619,10 @@ def recover_ntfs(
             progress(512 * boot.mft_record_size)
         if entry is None:
             continue
+        records[index] = (entry.sequence, entry.in_use)
+        if ghosts is not None and entry.is_dir and entry.base_index in (0, index) and \
+                (index == 5 or index not in SYSTEM_EXTENTS):
+            dir_entries.append(entry)
         if entry.base_index not in (0, index) or index in SYSTEM_EXTENTS:
             continue
         names = entry.names()
@@ -628,6 +639,18 @@ def recover_ntfs(
         if data is None:
             continue
         found.append((index, entry, parent_index, name, data))
+
+    if ghosts is not None:
+        for d in dir_entries:
+            if should_stop is not None and should_stop():
+                return
+            folder = "" if d.index == 5 else _resolve_path(d.index, dirs)[0]
+            for g in index_slack_entries(src, boot, d):
+                seq, in_use = records.get(g["ref_index"], (-1, False))
+                if seq == g["ref_seq"] and not in_use:
+                    continue                    # its MFT record is intact: the walk below finds it
+                g["path"] = _fold([folder, g["name"]])
+                ghosts.append(g)
 
     for index, entry, parent_index, name, data in found:
         if should_stop is not None and should_stop():
@@ -686,6 +709,107 @@ def recover_ntfs(
             cand.fragment_count = len(data.runs)
             cand.reasons.append(f"split across {len(data.runs)} extents")
         yield cand
+
+
+def _i30_entry(buf: bytes, pos: int, dir_index: int) -> dict | None:
+    """A plausible $I30 index entry at ``pos`` whose parent is ``dir_index``, else None."""
+    if pos + 0x52 > len(buf):
+        return None
+    key_len = struct.unpack_from("<H", buf, pos + 10)[0]
+    fn = pos + 0x10
+    nlen, namespace = buf[fn + 0x40], buf[fn + 0x41]
+    # Deleting the last entry of a block writes the 16-byte end marker over that entry's
+    # header (key length 0), but its $FILE_NAME key behind it survives: judge by the key then.
+    if nlen == 0 or namespace > 3 or (key_len and not 0x42 + 2 * nlen <= key_len <= 0x42 + 2 * 255 + 8):
+        return None
+    if fn + 0x42 + 2 * nlen > len(buf):
+        return None
+    parent = struct.unpack_from("<Q", buf, fn)[0] & 0x0000FFFFFFFFFFFF
+    if parent != dir_index:
+        return None
+    created, modified = struct.unpack_from("<QQ", buf, fn + 0x08)
+    if not (_FT_MIN <= modified <= _FT_MAX and _FT_MIN <= created <= _FT_MAX):
+        return None
+    alloc, real = struct.unpack_from("<QQ", buf, fn + 0x28)
+    flags = struct.unpack_from("<I", buf, fn + 0x38)[0]
+    if real > alloc or real > 1 << 42 or flags & 0x10000000:          # a folder, not a file
+        return None
+    try:
+        name = buf[fn + 0x42:fn + 0x42 + 2 * nlen].decode("utf-16-le")
+    except UnicodeDecodeError:
+        return None
+    if any(ord(ch) < 32 for ch in name) or name in (".", ".."):
+        return None
+    ref = struct.unpack_from("<Q", buf, pos)[0] if key_len else 0
+    return {"name": name, "size": real, "modified": filetime_to_unix(modified), "namespace": namespace,
+            "ref_index": ref & 0x0000FFFFFFFFFFFF, "ref_seq": ref >> 48, "ext": _extension(name)}
+
+
+def index_slack_entries(src, boot: BootSector, entry: MftEntry) -> list[dict]:
+    """Files a folder's index still remembers in its unused tail (the "slack").
+
+    A folder's $I30 index keeps its file names in 4 KB INDX blocks. Deleting a file
+    removes its entry, but the bytes past the block's new end are not cleared: entries
+    deleted from the end of a block, and stale copies of shifted ones, stay readable
+    there -- name, size and times -- long after the file's MFT record has been reused
+    for something else. Short (8.3) duplicates are dropped when a long name exists.
+    """
+    alloc = next((a for a in entry.all_of(ATTR_INDEX_ALLOCATION) if a.name in ("$I30", "")), None)
+    if alloc is None or alloc.resident or not alloc.runs:
+        return []
+    root = entry.first(ATTR_INDEX_ROOT)
+    block = boot.index_record_size or 4096
+    if root is not None and len(root.value) >= 12:
+        block = struct.unpack_from("<I", root.value, 8)[0] or block
+    if not 512 <= block <= 65536:
+        return []
+    size = alloc.real_size or alloc.allocated_size
+    if size <= 0 or size > 64 << 20:
+        return []
+    data, _gaps = read_attribute_runs(src, boot, alloc.runs, size)
+    live: set[str] = set()
+    found: dict[tuple[str, int], dict] = {}
+    if root is not None and len(root.value) >= 0x20:
+        # The root (inside the folder's record) holds live entries too: the B-tree's separators.
+        rbuf = bytes(root.value)
+        pos = 0x10 + struct.unpack_from("<I", rbuf, 0x10)[0]
+        end = 0x10 + struct.unpack_from("<I", rbuf, 0x14)[0]
+        while 0x10 <= pos < min(end, len(rbuf)) - 0x10:
+            if struct.unpack_from("<I", rbuf, pos + 12)[0] & 0x02:     # the end marker: no key of its own
+                break
+            e = _i30_entry(rbuf, pos, entry.index)
+            if e is not None:
+                live.add(e["name"].lower())
+            elen = struct.unpack_from("<H", rbuf, pos + 8)[0]
+            if elen < 0x10:
+                break
+            pos += elen
+    for start in range(0, len(data) - block + 1, block):
+        node = bytearray(data[start:start + block])
+        if node[:4] != b"INDX" or not apply_fixups(node, boot.bytes_per_sector):
+            continue
+        entries_off, used, allocated = struct.unpack_from("<III", node, 0x18)
+        first, end_used, end_alloc = 0x18 + entries_off, 0x18 + used, min(block, 0x18 + allocated)
+        pos = first
+        tail = end_used - (end_used % 8)
+        while first <= pos < end_used and pos + 16 <= len(node):   # the live entries: names in use here
+            elen = struct.unpack_from("<H", node, pos + 8)[0]
+            if struct.unpack_from("<I", node, pos + 12)[0] & 0x02:
+                tail = pos        # the end marker; a deleted entry's name can sit right behind it
+                break
+            e = _i30_entry(bytes(node), pos, entry.index)
+            if e is not None:
+                live.add(e["name"].lower())
+            if elen < 0x10:
+                break
+            pos += elen
+        for pos in range(tail, end_alloc - 0x52, 8):
+            e = _i30_entry(bytes(node), pos, entry.index)
+            if e is not None:
+                found.setdefault((e["name"].lower(), e["size"]), e)
+    out = [e for (low, _size), e in found.items() if low not in live]
+    longs = {(e["ref_index"], e["ref_seq"]) for e in out if e["namespace"] != 2}
+    return [e for e in out if e["namespace"] != 2 or (e["ref_index"], e["ref_seq"]) not in longs]
 
 
 def _inter_run_gaps(runs, cluster_size: int, total: int) -> list[tuple[int, int]]:
