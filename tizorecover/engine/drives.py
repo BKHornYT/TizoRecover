@@ -59,6 +59,12 @@ class Drive:
     system: bool
     partition: int = 0
     disk_size: int = 0
+    disk_offset: int = 0      # where the partition starts on its disk
+    lost: bool = False        # found by the partition search, not in the table
+    found_by: str = ""
+    parent: str = ""          # the disk number or image id a lost partition was found on
+    boot_patch: int = -1      # surviving boot copy to read in place of the first sectors
+    patch_len: int = 512
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -117,6 +123,7 @@ def _windows_drives() -> list[Drive]:
             bus=bus, media=media.get(str(p["disk"]), ""),
             removable=bus in ("USB", "SD", "MMC"), system=bool(disk.get("system") or disk.get("boot")),
             partition=p["num"], disk_size=int(disk.get("size") or 0),
+            disk_offset=int(p.get("offset") or 0),
         ))
     drives.sort(key=lambda d: (not d.removable, d.system, d.disk, d.partition))
     return drives

@@ -25,6 +25,7 @@ const P = {
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   chevron: '<path d="M9 5l7 7-7 7"/>',
   chevdown: '<path d="M6 9l6 6 6-6"/>',
+  chevleft: '<path d="M15 5l-7 7 7 7"/>',
   shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M12 8v5M12 16h.01"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   moon: '<path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z"/>',
@@ -65,7 +66,18 @@ async function api(path, body) {
   if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
   return data;
 }
-const dataUrl = (id, extra = "") => `/api/item/${id}/data?t=${encodeURIComponent(TOKEN)}${extra}`;
+// The scan number makes every scan's item URLs distinct, so the browser may cache them.
+const scanGen = () => (S.scan && S.scan.job) || 0;
+const dataUrl = (id, extra = "") => `/api/item/${id}/data?t=${encodeURIComponent(TOKEN)}&g=${scanGen()}${extra}`;
+const previewUrl = (id) => `/api/item/${id}/preview?t=${encodeURIComponent(TOKEN)}&g=${scanGen()}`;
+const THUMB_MAX = 12e6;
+function thumbFor(it, cls) {
+  if (it.status === "overwritten" || it.size > THUMB_MAX) return "";
+  if (SHOWABLE_IMAGE.has(it.ext) || (it.category === "image" && !it.named && !EMBEDDED_PREVIEW.has(it.ext))) {
+    return `<img class="${cls}" loading="lazy" decoding="async" src="${dataUrl(it.id)}" alt="">`;
+  }
+  return "";
+}
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 function size(n) {
   if (!n) return "0 B";
@@ -148,6 +160,7 @@ const S = {
   screen: "devices",
   drives: [],
   saved: [],
+  parts: null,
   picked: null,
   mode: "deep",
   scan: null,
@@ -201,6 +214,7 @@ async function init() {
   }
   go("devices");
   loadDrives(false);
+  api("/api/partitions").then((p) => { if (p.state === "running") pollParts(); }).catch(() => {});
   setInterval(() => api("/api/ping").catch(() => {}), 10000);
   setTimeout(checkUpdate, 1500);
 }
@@ -284,6 +298,7 @@ function driveKind(d) {
   return "ssd";
 }
 function driveTitle(d) {
+  if (d.lost) return d.label ? `${d.label} (lost)` : `Lost ${fsName(d.filesystem)} partition`;
   if (d.kind === "image") return d.label;
   if (d.letter) return `${d.letter}:  ${d.label || "Local disk"}`;
   return d.label || `Partition ${d.partition}`;
@@ -292,11 +307,13 @@ const fsName = (fs) => (!fs || fs === "unknown" ? "Unknown" : fs.toUpperCase());
 
 function disks() {
   const map = new Map();
-  for (const d of S.drives) {
-    const key = d.kind === "image" ? d.id : `disk${d.disk}`;
+  const ordered = [...S.drives.filter((d) => !d.lost), ...S.drives.filter((d) => d.lost)];
+  for (const d of ordered) {
+    const key = d.lost ? (d.parent.startsWith("img:") ? d.parent : `disk${d.parent}`) : d.kind === "image" ? d.id : `disk${d.disk}`;
     if (!map.has(key)) {
-      map.set(key, { key, name: d.kind === "image" ? "Disk image" : d.disk_name || `Disk ${d.disk}`, bus: d.bus, media: d.media,
-        size: d.disk_size || 0, removable: d.removable, system: d.system, image: d.kind === "image", disk: d.disk, parts: [], kind: driveKind(d) });
+      map.set(key, { key, name: d.kind === "image" ? d.label : d.disk_name || `Disk ${d.disk}`, bus: d.bus, media: d.media,
+        size: d.disk_size || 0, removable: d.removable, system: d.system, image: d.kind === "image", disk: d.disk, parts: [], kind: driveKind(d),
+        target: d.kind === "image" ? d.id : String(d.disk) });
     }
     const g = map.get(key);
     g.parts.push(d);
@@ -321,30 +338,75 @@ function renderDevices() {
     if (!g.removable && !g.image && g.media === "SSD") chips.push(`<span class="chip warn" title="SSDs erase deleted data on their own (TRIM)">SSD</span>`);
     const head = `<div class="dev-row disk">
       <div class="dev-name"><div class="dev-ico ${g.kind === "usb" ? "usb" : ""}">${icon(g.kind)}</div><div class="t"><b title="${esc(g.name)}">${esc(g.name)}</b><small>${chips.join("")}</small></div></div>
-      <div class="cell-muted">${esc(typeText)}</div><div></div><div class="num">${size(g.size)}</div><div></div></div>`;
-    const solo = g.image;
+      <div class="cell-muted">${esc(typeText)}</div><div></div><div class="num">${size(g.size)}</div><div>${searchCell(g.target)}</div></div>`;
+    const solo = g.image && g.parts.length === 1;
     const parts = g.parts.map((d) => {
       const used = d.size && d.free ? Math.max(0, Math.min(100, ((d.size - d.free) / d.size) * 100)) : null;
-      let sub = d.kind === "image" ? esc(d.path) : d.kind === "partition" ? "No drive letter, read through the disk" : esc(d.letter ? `Partition ${d.partition}` : "");
+      let sub = d.lost ? `<span class="chip warn">${icon("radar")}Lost</span> ${esc(d.found_by)}`
+        : d.kind === "image" ? esc(d.path) : d.kind === "partition" ? "No drive letter, read through the disk" : esc(d.letter ? `Partition ${d.partition}` : "");
       const sv = savedFor(d.id);
       if (sv) sub += ` <span class="chip accent" title="${esc(savedText(sv))}">${icon("history")}Saved scan</span>`;
-      return `<div class="dev-row part ${solo ? "solo" : ""} ${S.picked === d.id ? "sel" : ""}" data-id="${esc(d.id)}" tabindex="0">
-        <div class="dev-name"><div class="letter">${d.letter ? esc(d.letter) : icon(d.kind === "image" ? "disc" : "drive")}</div>
+      const last = solo ? searchCell(g.target)
+        : used == null ? "" : `<div class="usage"><div class="bar"><div style="width:${used}%"></div></div>${size(d.free)} free</div>`;
+      return `<div class="dev-row part ${solo ? "solo" : ""} ${d.lost ? "lost" : ""} ${S.picked === d.id ? "sel" : ""}" data-id="${esc(d.id)}" tabindex="0">
+        <div class="dev-name"><div class="letter">${d.letter ? esc(d.letter) : icon(d.lost ? "radar" : d.kind === "image" ? "disc" : "drive")}</div>
           <div class="t"><b title="${esc(driveTitle(d))}">${esc(driveTitle(d))}</b>${sub ? `<small>${sub}</small>` : ""}</div></div>
-        <div class="cell-muted">${d.kind === "image" ? "Disk image" : d.kind === "partition" ? "Partition" : "Volume"}</div>
+        <div class="cell-muted">${d.lost ? "Lost partition" : d.kind === "image" ? "Disk image" : d.kind === "partition" ? "Partition" : "Volume"}</div>
         <div class="cell-muted">${esc(fsName(d.filesystem))}</div>
         <div class="num">${size(d.size)}</div>
-        <div>${used == null ? "" : `<div class="usage"><div class="bar"><div style="width:${used}%"></div></div>${size(d.free)} free</div>`}</div>
+        <div>${last}</div>
       </div>`;
     }).join("");
     return `<div class="dev-disk">${solo ? "" : head}${parts}</div>`;
   }).join("");
+  $$("[data-pfind]", box).forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); findParts(b.dataset.pfind, b.dataset.thorough === "1"); };
+  });
+  $$("[data-pstop]", box).forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); api("/api/partitions/stop", {}).catch(() => {}); };
+  });
   $$(".dev-row.part", box).forEach((el) => {
     el.onclick = () => { S.picked = el.dataset.id; $$(".dev-row.part", box).forEach((x) => x.classList.toggle("sel", x === el)); renderPicked(); };
     el.ondblclick = () => startScan(el.dataset.id, S.mode);
     el.onkeydown = (e) => { if (e.key === "Enter") startScan(el.dataset.id, S.mode); };
   });
   renderPicked();
+}
+
+function searchCell(target) {
+  const p = S.parts;
+  if (p && p.state === "running" && p.target === target) {
+    const pct = p.total ? Math.floor((p.done / p.total) * 100) : 0;
+    return `<div class="parts-run"><span class="spinner"></span><span>Searching ${pct}%</span><button class="btn ghost sm" data-pstop>Stop</button></div>`;
+  }
+  const deeper = p && p.target === target && p.state === "done" && !p.thorough;
+  return `<button class="btn ghost sm find-parts" data-pfind="${esc(target)}" data-thorough="${deeper ? 1 : 0}"
+    title="${deeper ? "Read every sector of the drive (slow) for file systems a quick search can miss" : "Look for partitions that were deleted, or file systems a format left behind"}">${icon("radar")}${deeper ? "Search every sector" : "Find lost partitions"}</button>`;
+}
+
+async function findParts(target, thorough) {
+  try { await api("/api/partitions/search", { target, thorough }); } catch (e) { toast(e.message); return; }
+  pollParts();
+}
+async function pollParts() {
+  const p = await api("/api/partitions").catch(() => null);
+  if (!p) return;
+  S.parts = p;
+  if (p.state === "running") {
+    if (S.screen === "devices") renderDevices();
+    setTimeout(pollParts, 700);
+    return;
+  }
+  await loadDrives(false);
+  if (p.found) {
+    const first = S.drives.find((d) => d.lost && d.parent === p.target);
+    if (first) { S.picked = first.id; renderDevices(); }
+    toast(`Found ${plural(p.found, "lost file system")} on ${p.label}.`);
+  } else if (p.error) {
+    toast(p.error);
+  } else if (p.state === "done") {
+    toast(p.thorough ? "No lost partitions found, even sector by sector." : "No lost partitions found. Search every sector to look harder (slower).");
+  }
 }
 
 function renderPicked() {
@@ -365,6 +427,9 @@ function renderPicked() {
     return;
   }
   let note = `<span class="note">${esc(fsName(d.filesystem))} · ${size(d.size)}${d.removable ? " · removable" : ""}</span>`;
+  if (d.lost) {
+    note = `<span class="note">Lost ${esc(fsName(d.filesystem))} file system, found by its ${esc(d.found_by)}. Scanning it reads the drive as it was before.</span>`;
+  }
   if (!d.removable && d.media === "SSD" && d.kind !== "image") {
     note = `<span class="note warn">SSD: Windows tells SSDs to wipe deleted data (TRIM), often within seconds. Recently deleted files may already be gone.</span>`;
   } else if (d.system) {
@@ -768,7 +833,7 @@ function isOpen(node) {
   return S.shown.length <= 400 || node.depth === 0 && S.tab === "carved";
 }
 
-function flatten() {
+function flatten(all = false) {
   const rows = [];
   const flat = S.view === "grid" || S.filters.q.trim();
   if (flat) {
@@ -779,7 +844,7 @@ function flatten() {
       : (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
     const walk = (node) => {
       for (const k of [...node.kids.values()].sort(folderSort)) {
-        const open = isOpen(k);
+        const open = all || isOpen(k);
         rows.push({ folder: k, depth: k.depth, open });
         if (open) walk(k);
       }
@@ -787,7 +852,9 @@ function flatten() {
     };
     walk(S.tree);
   }
+  if (all) return rows;
   S.rows = rows;
+  return rows;
 }
 
 /* ---------- review: list / grid ---------- */
@@ -828,7 +895,7 @@ function renderList() {
       const sub = r.flat ? (it.named ? it.folder || "(top folder)" : CAT_LABEL[it.category]) : "";
       html += `<div class="row file ${S.current === it.id ? "current" : ""}" data-i="${i}" style="top:${i * ROW}px">
         <div class="c-check"><input type="checkbox" class="check" data-pick="${it.id}" ${S.selected.has(it.id) ? "checked" : ""}></div>
-        <div class="name-cell" style="${r.flat ? "" : `padding-left:${r.depth * 20 + 24}px`}">${icon(it.category, "fi").replace("<svg", `<svg ${catStyle(it.category)}`)}<span class="nm" title="${esc(it.path || it.name)}">${esc(it.name)}</span>${sub ? `<span class="sub" title="${esc(sub)}">${esc(sub)}</span>` : ""}<button class="icon-btn eye" data-eye="${it.id}" title="Preview">${icon("eye")}</button></div>
+        <div class="name-cell" style="${r.flat ? "" : `padding-left:${r.depth * 20 + 24}px`}">${thumbFor(it, "rthumb") || icon(it.category, "fi").replace("<svg", `<svg ${catStyle(it.category)}`)}<span class="nm" title="${esc(it.path || it.name)}">${esc(it.name)}</span>${sub ? `<span class="sub" title="${esc(sub)}">${esc(sub)}</span>` : ""}<button class="icon-btn eye" data-eye="${it.id}" title="Quick Look (Space)">${icon("eye")}</button></div>
         <div>${chance(it.status)}</div>
         <div class="cell-muted">${date(it.modified) || "—"}</div>
         <div class="cell-muted">${esc((it.ext || "?").toUpperCase())} ${CAT_ONE[it.category].toLowerCase()}</div>
@@ -837,6 +904,19 @@ function renderList() {
   }
   spacer.innerHTML = html;
   $$("[data-ind]", spacer).forEach((el) => { el.indeterminate = true; });
+}
+
+function gridThumb(it) {
+  if (it.status === "overwritten") return icon(it.category);
+  if (it.category === "image" && it.size < 40e6) {
+    const src = EMBEDDED_PREVIEW.has(it.ext) ? previewUrl(it.id) : dataUrl(it.id);
+    return `<img loading="lazy" decoding="async" src="${src}" alt="">`;
+  }
+  if (PLAYABLE_VIDEO.has(it.ext) && it.size < 4e9) {
+    // The first frames only: the browser asks for a small byte range.
+    return `<video muted preload="metadata" src="${dataUrl(it.id)}#t=0.5"></video><span class="tile-badge">${icon("video")}</span>`;
+  }
+  return icon(it.category);
 }
 
 function renderGrid() {
@@ -850,8 +930,7 @@ function renderGrid() {
   let html = `<div class="grid-tiles" style="top:${firstRow * rowH + 12}px;grid-template-columns:repeat(${cols},1fr)">`;
   for (let i = firstRow * cols; i < Math.min(items.length, lastRow * cols); i++) {
     const it = items[i];
-    const thumb = it.category === "image" && it.status !== "overwritten" && it.size < 40e6
-      ? `<img loading="lazy" src="${dataUrl(it.id)}" alt="">` : icon(it.category);
+    const thumb = gridThumb(it);
     html += `<div class="tile ${S.current === it.id ? "current" : ""}" data-g="${i}" ${catStyle(it.category)}>
       <input type="checkbox" class="check" data-pick="${it.id}" ${S.selected.has(it.id) ? "checked" : ""}>
       <div class="thumb">${thumb}</div>
@@ -899,7 +978,7 @@ spacer.addEventListener("click", (ev) => {
     return;
   }
   const eye = ev.target.closest("[data-eye]");
-  if (eye) { select(S.items[Number(eye.dataset.eye)] || S.shown.find((x) => x.id === Number(eye.dataset.eye))); return; }
+  if (eye) { openQuickLook(S.items[Number(eye.dataset.eye)]); return; }
   const tile = ev.target.closest("[data-g]");
   if (tile) { select(S.shown[Number(tile.dataset.g)]); return; }
   const rowEl = ev.target.closest("[data-i]");
@@ -913,9 +992,7 @@ spacer.addEventListener("dblclick", (ev) => {
   const rowEl = ev.target.closest("[data-i], [data-g]");
   if (!rowEl) return;
   const it = rowEl.dataset.g != null ? S.shown[Number(rowEl.dataset.g)] : S.rows[Number(rowEl.dataset.i)].file;
-  if (!it) return;
-  S.selected.has(it.id) ? S.selected.delete(it.id) : S.selected.add(it.id);
-  afterSelection();
+  if (it) openQuickLook(it);
 });
 
 function afterSelection() {
@@ -938,6 +1015,9 @@ document.addEventListener("keydown", (ev) => {
     const next = Math.max(0, Math.min(files.length - 1, idx + (ev.key === "ArrowRight" ? 1 : -1)));
     if (files[next]) { select(files[next]); scrollToFile(files[next]); }
   } else if (ev.key === " " && idx >= 0) {
+    ev.preventDefault();
+    openQuickLook(S.items[S.current]);
+  } else if (ev.key === "Enter" && idx >= 0) {
     ev.preventDefault();
     S.selected.has(S.current) ? S.selected.delete(S.current) : S.selected.add(S.current);
     afterSelection();
@@ -981,7 +1061,7 @@ function renderSelection() {
   const bytes = items.reduce((a, it) => a + it.size, 0);
   $("#sel-info").innerHTML = items.length
     ? `<b>${plural(items.length, "file")}</b> selected · ${size(bytes)}`
-    : "Tick the files and folders you want back";
+    : `Tick the files and folders you want back <span class="hint"><kbd>Space</kbd> Quick Look</span>`;
   const btn = $("#recover-btn");
   btn.disabled = !items.length;
   btn.innerHTML = `${icon("download")}Recover${items.length ? ` ${plural(items.length, "file")}` : ""}`;
@@ -1137,7 +1217,7 @@ async function renderPvTab() {
     const d = await api(`/api/item/${it.id}`).catch((e) => ({ error: e.message }));
     if (my !== previewToken) return;
     if (d.error) { body.innerHTML = `<div class="pv-note">${esc(d.error)}</div>`; return; }
-    const method = { ntfs: "NTFS file table", fat: "FAT directory", carve: "Recognised by its content", ext4: "ext4 inode" }[d.method] || d.method;
+    const method = { ntfs: "NTFS file table", fat: "FAT directory", exfat: "exFAT directory", carve: "Recognised by its content", ext4: "ext4 inode" }[d.method] || d.method;
     body.innerHTML = `<dl class="pv-info">
       <dt>Chances</dt><dd>${chance(d.status)}</dd>
       <dt>Why</dt><dd>${d.notes.length ? `<ul>${d.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "No problems found"}</dd>
@@ -1152,28 +1232,47 @@ async function renderPvTab() {
     return;
   }
   if (S.pvTab === "hex") return renderHex(it, 0, my);
+  return renderMedia(body, it, () => my === previewToken);
+}
+
+// Formats the window cannot draw itself, but which usually carry a JPEG inside.
+const EMBEDDED_PREVIEW = new Set(["cr2", "cr3", "nef", "nrw", "arw", "srf", "sr2", "dng", "raf", "orf", "rw2", "pef", "srw", "x3f",
+  "tif", "tiff", "heic", "heif", "psd", "mp3", "m4a", "mov", "mp4", "3gp"]);
+
+/** Draws the best preview of ``it`` into ``body``; ``alive()`` turns false once the user moved on. */
+async function renderMedia(body, it, alive, opts = {}) {
   const ext = it.ext;
+  const note = (ic, text) => { if (alive()) body.innerHTML = `<div class="pv-note">${icon(ic)}${text}</div>`; };
   if (it.status === "overwritten") {
-    body.innerHTML = `<div class="pv-note">${icon("alert")}This file's space has been reused or wiped, so a preview would only show other data. The Hex tab shows what is there now.</div>`;
+    note("alert", "This file's space has been reused or wiped, so a preview would only show other data. The Hex tab shows what is there now.");
     return;
   }
-  if (SHOWABLE_IMAGE.has(ext) || (it.category === "image" && !it.named)) {
+  const embedded = () => {
+    body.innerHTML = `<div class="pv-media"><img alt=""></div><div class="pv-caption">Preview stored inside the file. The file itself is recovered complete.</div>`;
+    const img = $("img", body);
+    img.onerror = () => note(it.category, `No preview for .${esc(ext || "?")} files here${it.category === "image" ? " (the window cannot draw this picture format)" : ""}. Recovering it works the same.`);
+    img.src = previewUrl(it.id);
+  };
+  if (SHOWABLE_IMAGE.has(ext) || (it.category === "image" && !it.named && !EMBEDDED_PREVIEW.has(ext))) {
     body.innerHTML = `<div class="pv-media"><img alt=""></div>`;
     const img = $("img", body);
     img.onload = () => { if (img.naturalWidth < 200 && img.naturalHeight < 200) img.classList.add("small"); };
-    img.onerror = () => { if (my === previewToken) body.innerHTML = `<div class="pv-note">${icon("image")}This picture does not open here: its data is damaged, or it is a format the preview cannot show. Recovering it may still work.</div>`; };
+    img.onerror = () => note("image", "This picture does not open here: its data is damaged, or it is a format the preview cannot show. Recovering it may still work.");
     img.src = dataUrl(it.id);
     return;
   }
   if (PLAYABLE_VIDEO.has(ext)) {
-    body.innerHTML = `<div class="pv-media"><video controls preload="metadata"></video></div>`;
+    body.innerHTML = `<div class="pv-media"><video controls preload="metadata" ${opts.autoplay ? "autoplay" : ""}></video></div>`;
     const v = $("video", body);
-    v.onerror = () => { if (my === previewToken) body.innerHTML = `<div class="pv-note">${icon("video")}This video does not play here. It may be damaged, or use a codec the preview lacks (HEVC, for example). Recovering it may still work.</div>`; };
+    v.onerror = () => { if (alive()) embedded(); };
     v.src = dataUrl(it.id);
     return;
   }
   if (PLAYABLE_AUDIO.has(ext)) {
-    body.innerHTML = `<div class="pv-media"><audio controls preload="metadata"></audio></div>`;
+    body.innerHTML = `<div class="pv-media audio"><img class="cover" alt="" hidden><div class="cover-ph">${icon("audio")}</div><audio controls preload="metadata" ${opts.autoplay ? "autoplay" : ""}></audio></div>`;
+    const cover = $(".cover", body);
+    cover.onload = () => { cover.hidden = false; $(".cover-ph", body).hidden = true; };
+    if (ext === "mp3" || ext === "m4a" || ext === "flac") cover.src = previewUrl(it.id);
     $("audio", body).src = dataUrl(it.id);
     return;
   }
@@ -1184,13 +1283,14 @@ async function renderPvTab() {
   }
   if (TEXTY.has(ext)) {
     const r = await api(`/api/item/${it.id}/text`).catch((e) => ({ text: "", note: e.message }));
-    if (my !== previewToken) return;
+    if (!alive()) return;
     if (!r.text) { body.innerHTML = `<div class="pv-note">${esc(r.note || "No readable text in this file.")}</div>`; return; }
     body.innerHTML = `<pre class="pv-text"></pre>${r.truncated ? '<div class="pv-note">Only the start is shown.</div>' : ""}`;
     $("pre", body).textContent = r.text;
     return;
   }
-  body.innerHTML = `<div class="pv-note">${icon(it.category)}No preview for .${esc(ext || "?")} files. The Hex tab shows the raw bytes.</div>`;
+  if (EMBEDDED_PREVIEW.has(ext) || it.category === "image" || it.category === "video") { embedded(); return; }
+  note(it.category, `No preview for .${esc(ext || "?")} files. The Hex tab shows the raw bytes.`);
 }
 
 async function renderHex(it, offset, my) {
@@ -1207,6 +1307,74 @@ async function renderHex(it, offset, my) {
   $("#hex-more")?.addEventListener("click", () => renderHex(it, offset + 4096, my));
 }
 $("#pv-save").onclick = () => { const it = S.items[S.current]; if (it) openRecover([it]); };
+
+/* ---------- Quick Look ---------- */
+const ql = $("#ql");
+let qlList = [];
+let qlIdx = 0;
+let qlToken = 0;
+
+function openQuickLook(it) {
+  if (!it) return;
+  qlList = S.view === "grid" || S.filters.q.trim() ? S.shown.slice() : flatten(true).filter((r) => r.file).map((r) => r.file);
+  qlIdx = Math.max(0, qlList.findIndex((x) => x.id === it.id));
+  if (!ql.open) ql.showModal();
+  // Keys belong to the viewer, not to whichever of its buttons got focus
+  // (Enter would otherwise press "close").
+  ql.focus();
+  renderQuickLook();
+}
+
+function renderQuickLook() {
+  const it = qlList[qlIdx];
+  if (!it) { ql.close(); return; }
+  const my = ++qlToken;
+  S.current = it.id;
+  renderList();
+  scrollToFile(it);
+  $("#ql-name").textContent = it.name;
+  $("#ql-sub").textContent = it.named ? `/${it.path}` : `Reconstructed · ${CAT_ONE[it.category]}`;
+  $("#ql-count").textContent = `${nf(qlIdx + 1)} of ${nf(qlList.length)}`;
+  $("#ql-meta").innerHTML = `${chance(it.status)}<span>${size(it.size)}</span>${it.modified ? `<span>${esc(date(it.modified))}</span>` : ""}`;
+  $("#ql-pick").checked = S.selected.has(it.id);
+  $("#ql-prev").disabled = qlIdx === 0;
+  $("#ql-next").disabled = qlIdx >= qlList.length - 1;
+  const body = $("#ql-body");
+  body.innerHTML = '<div class="pv-note"><span class="spinner"></span></div>';
+  renderMedia(body, it, () => my === qlToken && ql.open);
+}
+
+function qlStep(delta) {
+  const next = qlIdx + delta;
+  if (next < 0 || next >= qlList.length) return;
+  qlIdx = next;
+  renderQuickLook();
+}
+$("#ql-prev").onclick = () => qlStep(-1);
+$("#ql-next").onclick = () => qlStep(1);
+$("#ql-close").onclick = () => ql.close();
+$("#ql-save").onclick = () => { const it = qlList[qlIdx]; if (it) { ql.close(); openRecover([it]); } };
+$("#ql-pick").onchange = (e) => {
+  const it = qlList[qlIdx];
+  if (!it) return;
+  e.target.checked ? S.selected.add(it.id) : S.selected.delete(it.id);
+  afterSelection();
+};
+ql.addEventListener("close", () => { qlToken++; $("#ql-body").innerHTML = ""; });
+ql.addEventListener("click", (e) => { if (e.target === ql) ql.close(); });
+ql.addEventListener("keydown", (e) => {
+  if (e.target.matches("input[type=text], textarea")) return;
+  const act = {
+    ArrowRight: () => qlStep(1), ArrowDown: () => qlStep(1),
+    ArrowLeft: () => qlStep(-1), ArrowUp: () => qlStep(-1),
+    " ": () => ql.close(), Enter: () => $("#ql-pick").click(),
+  }[e.key];
+  if (!act) return;
+  // Handled here: the list's own shortcuts must not see it (Space would reopen the viewer).
+  e.preventDefault();
+  e.stopPropagation();
+  act();
+});
 
 /* ---------- recover dialog ---------- */
 const dlg = $("#recover-dialog");

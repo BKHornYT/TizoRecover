@@ -18,6 +18,7 @@ import hashlib
 from .blockdev import BlockReader, VolumeAccessError, open_source, resolve_volume
 from .carver import carve_orphans, carve_range
 from .formats import ByteSourceView
+from .fs import exfat as exfat_fs
 from .fs import fat as fat_fs
 from .fs import ntfs as ntfs_fs
 from .results import FileCandidate, RecoveryReport, Strategy, Verdict
@@ -30,12 +31,14 @@ def detect_filesystem(src: ByteSourceView) -> str:
     """Name the filesystem from its superblock, or ``unknown``."""
     if ntfs_fs.parse_boot_sector(src) is not None:
         return "ntfs"
+    # exFAT's name sits at offset 3 (where NTFS keeps "NTFS    "), not where
+    # FAT keeps its type string, and its boot sector fails every FAT check.
+    if exfat_fs.find_exfat(src) is not None:
+        return "exfat"
     if fat_fs.find_fat(src) is not None:
         head = src.at(0, 512)
         if head[0x52:0x5A] == b"FAT32   ":
             return "fat32"
-        if head[0x36:0x3E] == b"EXFAT   ":
-            return "exfat"
         return "fat"
     magic = src.at(0x438, 2)
     if magic == b"\x53\xef":
@@ -62,7 +65,7 @@ def _orphan_handler(src, volume, progress, should_stop, on_found=None):
 
 
 def _is_exfat(src: ByteSourceView) -> bool:
-    return src.at(0, 512)[0x36:0x3E] == b"EXFAT   "
+    return src.at(0, 512)[3:11] == b"EXFAT   "
 
 
 def scan(

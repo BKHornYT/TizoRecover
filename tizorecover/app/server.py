@@ -29,7 +29,10 @@ from urllib.parse import parse_qs, urlparse
 from tizorecover import APP_NAME, __version__
 from tizorecover.engine import drives as drives_mod
 from tizorecover.engine.erase import EraseError, EraseJob, Planner
+from tizorecover.engine import formats as formats_mod
+from tizorecover.engine import partitions as parts_mod
 from tizorecover.engine import tzscan
+from tizorecover.engine.blockdev import VolumeAccessError, open_source
 from tizorecover.engine.session import DEEP, QUICK, ScanJob
 from tizorecover.engine.writer import save_items
 from tizorecover.app.update import Updater
@@ -55,6 +58,18 @@ OFFICE_TEXT = {"docx": "word/document.xml", "pptx": "ppt/slides/", "xlsx": "xl/s
                "odt": "content.xml", "ods": "content.xml", "odp": "content.xml"}
 CHANCES = {"good": "High", "partial": "Average", "overwritten": "Low"}
 TEXT_LIMIT = 256 << 10
+PREVIEW_SCAN = 48 << 20
+
+
+class _BytesSource:
+    """A ``ByteSource`` over bytes already in memory."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+        self.size = len(data)
+
+    def at(self, offset: int, length: int) -> bytes:
+        return self._data[offset:offset + length] if offset >= 0 else b""
 OFFICE_LIMIT = 64 << 20
 
 
@@ -73,6 +88,10 @@ class App:
         self.planner = Planner()
         self.updater = Updater()
         self.erase: EraseJob | None = None
+        self.lost: list[drives_mod.Drive] = []
+        self.job_serial = 0
+        self.parts: dict = {"state": "idle"}
+        self.parts_stop = threading.Event()
         self.last_ping = time.time()
         self.lock = threading.Lock()
 
@@ -84,7 +103,7 @@ class App:
                 except Exception:
                     self.drives = []
                 self.drives_at = time.time()
-            return self.drives + self.images
+            return self.drives + self.images + self.lost
 
     def find_drive(self, drive_id: str) -> drives_mod.Drive | None:
         return next((d for d in self.all_drives() if d.id == drive_id), None)
@@ -93,9 +112,88 @@ class App:
         if self.job is not None:
             self.job.close()
         mode = DEEP if mode == DEEP else QUICK
+        self.job_serial += 1
         if resume is not None and resume.get("mode") == DEEP:
             mode = DEEP
         self.job = ScanJob(drive, mode, resume=resume, autosave=tzscan.auto_path(drive)).start()
+
+    def search_partitions(self, target: str, thorough: bool) -> str | None:
+        """Start a lost-partition search. Returns an error message, or None."""
+        if self.parts.get("state") == "running":
+            return "A partition search is already running."
+        known = [d for d in self.all_drives() if not d.lost]
+        if target.startswith("img:"):
+            image = next((d for d in known if d.id == target), None)
+            if image is None:
+                return "Unknown disk image."
+            sources = [(image.path, image.size, image, None)]
+            label = image.label
+        else:
+            try:
+                disk = int(target)
+            except ValueError:
+                return "Unknown disk."
+            on_disk = [d for d in known if d.disk == disk and d.kind != "image"]
+            if not on_disk:
+                return "Unknown disk."
+            label = on_disk[0].disk_name
+            if drives_mod.is_admin() or sys.platform != "win32":
+                path = f"\\\\.\\PhysicalDrive{disk}" if sys.platform == "win32" else on_disk[0].path
+                sources = [(path, on_disk[0].disk_size, on_disk[0], on_disk)]
+            else:
+                vols = [d for d in on_disk if d.kind == "volume"]
+                if not vols or not all(d.removable for d in vols):
+                    return ("Searching a whole disk for lost partitions needs administrator rights. "
+                            "Use Restart as administrator, then search again.")
+                sources = [(d.path, d.size, d, None) for d in vols]
+        self.lost = [d for d in self.lost if not d.id.startswith(f"lost:{target}:")]
+        self.parts_stop.clear()
+        state = {"state": "running", "target": target, "label": label, "thorough": thorough,
+                 "done": 0, "total": sum(size for _p, size, _d, _l in sources), "found": 0, "error": ""}
+        self.parts = state
+
+        def progress(n: int) -> None:
+            state["done"] += n
+
+        def work() -> None:
+            found_drives = []
+            for path, _size, src_drive, live in sources:
+                if self.parts_stop.is_set():
+                    break
+                try:
+                    reader = open_source(path)
+                except VolumeAccessError as exc:
+                    state["error"] = str(exc)
+                    continue
+                try:
+                    searcher = parts_mod.Searcher(reader)
+                    run = searcher.thorough if thorough else searcher.quick
+                    found = run(progress, self.parts_stop.is_set)
+                    size = reader.size
+                finally:
+                    reader.close()
+                if live is not None:
+                    parts_mod.mark_current(found, [(d.disk_offset, d.size, d.filesystem) for d in live])
+                else:
+                    parts_mod.mark_current(found, [(0, src_drive.size, src_drive.filesystem)])
+                    if src_drive.kind == "image":
+                        for f in found:
+                            f.current = f.current or f.start == 0
+                for f in parts_mod.prune_overlaps([f for f in found if not f.current]):
+                    found_drives.append(drives_mod.Drive(
+                        id=f"lost:{target}:{path}:{f.start}:{f.filesystem}", kind="partition", path=path,
+                        offset=f.start, size=max(0, min(f.size, size - f.start)), label=f.label,
+                        letter="", filesystem=f.filesystem, free=0, disk=src_drive.disk,
+                        disk_name=src_drive.disk_name, bus=src_drive.bus, media=src_drive.media,
+                        removable=src_drive.removable, system=False, disk_size=src_drive.disk_size,
+                        lost=True, found_by=f.found_by, boot_patch=f.boot_patch, patch_len=f.patch_len,
+                        parent=target))
+            self.lost = [d for d in self.lost if not d.id.startswith(f"lost:{target}:")] + found_drives
+            state["found"] = len(found_drives)
+            state["state"] = "stopped" if self.parts_stop.is_set() else ("failed" if state["error"] and not found_drives else "done")
+
+        threading.Thread(target=work, name="tizo-parts", daemon=True).start()
+        return None
 
     def saved_scans(self) -> list[dict]:
         """Saved scans, each tied to a drive that is plugged in now (or ``drive_id`` None)."""
@@ -326,7 +424,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/scan":
             if app.job is None:
                 return self._json({"state": "none"})
-            return self._json(app.job.status())
+            return self._json({**app.job.status(), "job": app.job_serial})
         if path == "/api/items":
             if app.job is None:
                 return self._json({"items": [], "total": 0})
@@ -338,13 +436,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(app.recover)
         if path == "/api/saved":
             return self._json({"saved": app.saved_scans()})
+        if path == "/api/partitions":
+            return self._json(app.parts)
         if path == "/api/update":
             return self._json(app.updater.check())
         if path == "/api/update/status":
             return self._json(app.updater.state)
         if path == "/api/erase":
             return self._json(app.erase.status() if app.erase else {"state": "idle"})
-        m = re.fullmatch(r"/api/item/(\d+)(?:/(data|hex|text))?", path)
+        m = re.fullmatch(r"/api/item/(\d+)(?:/(data|hex|text|preview))?", path)
         if m:
             if app.job is None:
                 return self._error("no scan", 404)
@@ -356,6 +456,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(item.details())
             if what == "data":
                 return self._data(item, q("download") == "1")
+            if what == "preview":
+                return self._preview(item)
             if what == "hex":
                 return self._hex(item, int(q("offset", "0")), min(int(q("length", "4096")), 65536))
             return self._text(item)
@@ -389,6 +491,14 @@ class Handler(BaseHTTPRequestHandler):
                                    f"{(want.get('size') or 0) / 1e9:.1f} GB), then open it again.")
             app.start_scan(drive, saved.get("mode", QUICK), saved)
             return self._json({"ok": True, "drive": drive.to_dict()})
+        if path == "/api/partitions/search":
+            problem = app.search_partitions(str(body.get("target", "")), bool(body.get("thorough")))
+            if problem:
+                return self._error(problem)
+            return self._json({"ok": True})
+        if path == "/api/partitions/stop":
+            app.parts_stop.set()
+            return self._json({"ok": True})
         if path == "/api/saved/delete":
             target = os.path.abspath(str(body.get("path", "")))
             if os.path.dirname(target) == os.path.abspath(tzscan.sessions_dir()) and target.endswith(tzscan.SUFFIX):
@@ -530,7 +640,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(max(0, end - start + 1)))
-        self.send_header("Cache-Control", "no-store")
+        # Item URLs carry the scan number (?g=), so a cached copy can never be
+        # another scan's file; caching keeps thumbnails from reloading on scroll.
+        self.send_header("Cache-Control", "private, max-age=900")
         self.send_header("X-Content-Type-Options", "nosniff")
         if download:
             name = re.sub(r'[^\w.\- ]', "_", item.candidate.name or "file")
@@ -540,6 +652,38 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         for block in data.chunks(1 << 20, start, end + 1):
             self.wfile.write(block)
+
+    def _preview(self, item) -> None:
+        """The largest intact JPEG inside a file the window cannot show itself.
+
+        Camera RAW files (CR2, NEF, ARW, DNG, ...) carry a full-size JPEG
+        preview, MP3s their album art, many videos and TIFFs a thumbnail.
+        """
+        data = self.app.job.data(item)
+        blob = data.at(0, min(data.size, PREVIEW_SCAN))
+        best = None
+        view = _BytesSource(blob)
+        pos = blob.find(b"\xff\xd8\xff")
+        tries = 0
+        while pos >= 0 and tries < 64:
+            tries += 1
+            extent = formats_mod._jpeg_walk(view, pos, len(blob))
+            if extent is not None and extent.verdict.value == "valid" and extent.size > 2048:
+                if best is None or extent.size > best[1]:
+                    best = (pos, extent.size)
+                pos = blob.find(b"\xff\xd8\xff", pos + extent.size)
+            else:
+                pos = blob.find(b"\xff\xd8\xff", pos + 3)
+        if best is None or (best[0] == 0 and item.candidate.ext.lower() in ("jpg", "jpeg")):
+            return self._error("no embedded preview", 404)
+        body = blob[best[0]:best[0] + best[1]]
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, max-age=900")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _hex(self, item, offset: int, length: int) -> None:
         data = self.app.job.data(item)

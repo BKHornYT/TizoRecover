@@ -46,8 +46,13 @@ def main() -> int:
     dest = os.path.join(work, "recovered")
 
     app = App()
-    app.images = [image_drive(image)]
-    app.all_drives = lambda refresh=False: list(app.images)   # never the real drives
+    from tests.test_partitions import build_disk
+    disk_path = os.path.join(work, "formatted-disk.img")
+    disk_bytes, disk_want = build_disk()
+    with open(disk_path, "wb") as fh:
+        fh.write(disk_bytes)
+    app.images = [image_drive(image), image_drive(disk_path)]
+    app.all_drives = lambda refresh=False: list(app.images) + list(app.lost)   # never the real drives
     server = make_server(app)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={app.token}"
@@ -98,7 +103,7 @@ def main() -> int:
         page.wait_for_selector("#screen-review:not([hidden])")
         named = int(page.inner_text("#tab-n-named"))
         carved = int(page.inner_text("#tab-n-carved"))
-        check("named tab count", named == 16, str(named))
+        check("named tab count", named == 17, str(named))
         check("reconstructed tab count", carved >= 5, str(carved))
         check("folders shown", page.locator(".row.folder").count() >= 4)
         check("deleted folder marked", page.locator(".row.folder.deleted").count() >= 1)
@@ -108,7 +113,7 @@ def main() -> int:
         photos = page.locator(".row.folder", has_text="Photos").first
         photos.locator("[data-fpick]").click()
         sel = page.inner_text("#sel-info")
-        check("folder tick selects 8 files", sel.startswith("8 files"), sel)
+        check("folder tick selects 9 files", sel.startswith("9 files"), sel)
         trip = page.locator(".row.folder", has_text="Iceland 2026").first
         trip.locator("[data-fpick]").click()
         ind = photos.locator("[data-fpick]").evaluate("el => el.indeterminate")
@@ -133,6 +138,36 @@ def main() -> int:
         page.wait_for_selector(".pv-hex")
         check("hex tab", "PNG" in page.inner_text(".pv-hex"))
         page.click("#pv-tabs [data-tab=preview]")
+
+        print("quick look")
+        page.locator(".row.file", has_text="IMG_2042.png").locator("[data-eye]").click()
+        page.wait_for_selector("#ql[open] .pv-media img")
+        page.wait_for_function("document.querySelector('#ql .pv-media img').naturalWidth > 0", timeout=10000)
+        count = page.inner_text("#ql-count")
+        page.keyboard.press("ArrowRight")
+        page.wait_for_function(f"document.querySelector('#ql-count').textContent !== {count!r}")
+        check("quick look steps with arrows", page.inner_text("#ql-name") == "IMG_2043.png", page.inner_text("#ql-name"))
+        was = page.locator("#ql-pick").is_checked()
+        page.keyboard.press("Enter")
+        check("enter flips the tick", page.locator("#ql-pick").is_checked() != was)
+        page.keyboard.press("Enter")
+        check("enter flips it back", page.locator("#ql-pick").is_checked() == was)
+        shot("16-quick-look")
+        raw = None
+        for _ in range(12):
+            page.keyboard.press("ArrowLeft")
+            page.wait_for_timeout(150)
+            if page.inner_text("#ql-name") == "DSC_0420.nef":
+                raw = True
+                break
+        check("RAW reached in quick look", bool(raw))
+        page.wait_for_selector("#ql .pv-media img")
+        page.wait_for_function("document.querySelector('#ql .pv-media img').naturalWidth > 0", timeout=10000)
+        check("RAW shows its embedded preview", "stored inside the file" in page.inner_text("#ql-body"))
+        shot("17-quick-look-raw")
+        page.keyboard.press(" ")
+        check("space closes quick look", not page.locator("#ql").evaluate("d => d.open"))
+        check("list thumbnails", page.locator(".row.file img.rthumb").count() >= 3)
 
         page.fill("#q", "invoice")
         page.wait_for_timeout(400)
@@ -178,7 +213,7 @@ def main() -> int:
         page.click("#rd-start")
         page.wait_for_selector("#rd-done:not([hidden])", timeout=30000)
         title = page.inner_text("#rd-done-title")
-        check("done screen", title == "8 files recovered", title)
+        check("done screen", title == "9 files recovered", title)
         shot("10-recover-done")
         page.click("#rd-cancel")
         want = [it for it in app.job.snapshot() if (it.candidate.original_path or "").startswith("Photos/")]
@@ -188,7 +223,7 @@ def main() -> int:
             if os.path.isfile(path):
                 with open(path, "rb") as fh:
                     same += fh.read() == app.job.data(it).read_all()
-        check("recovered files byte-identical", same == len(want) == 8, f"{same}/{len(want)}")
+        check("recovered files byte-identical", same == len(want) == 9, f"{same}/{len(want)}")
 
         print("saved scan")
         page.click(".nav-item[data-goto=devices]")
@@ -212,6 +247,28 @@ def main() -> int:
         page.wait_for_selector("#confirm-dialog[open]")
         check("new scan asks before replacing the save", "Replace" in page.inner_text("#cf-title"))
         page.click("#cf-no")
+
+        print("lost partitions")
+        page.click(".nav-item[data-goto=devices]")
+        page.wait_for_selector("[data-pfind]")
+        disk_btn = page.locator(".dev-disk", has_text="formatted-disk.img").locator("[data-pfind]")
+        disk_btn.click()
+        page.wait_for_selector(".dev-row.part.lost", timeout=60000)
+        lost = page.locator(".dev-row.part.lost")
+        check("lost file systems listed", lost.count() == 4, str(lost.count()))
+        ntfs_row = page.locator(".dev-row.part.lost", has_text="NTFS")
+        check("formatted-over NTFS explained", "backup boot sector" in ntfs_row.inner_text())
+        shot("14-lost-partitions")
+        ntfs_row.click()
+        page.click("#method-btn")
+        page.click("#method-menu [data-mode=quick]")
+        page.click("#search-btn")
+        page.wait_for_selector("#screen-scan:not([hidden])")
+        page.wait_for_function("document.querySelector('#sc-title').textContent.includes('complete')", timeout=60000)
+        page.click("#sc-review")
+        page.wait_for_selector(".row.file")
+        check("undo format: old file by name", page.locator(".row.file", has_text="before the format.png").count() == 1)
+        shot("15-undo-format")
 
         print("tools + theme")
         page.click(".nav-item[data-goto=tools]")

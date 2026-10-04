@@ -284,6 +284,24 @@
   </div>
 </dialog>
 
+<dialog id="ql" class="ql" aria-label="Quick Look" tabindex="-1">
+  <div class="ql-head">
+    <div class="ql-titles"><b id="ql-name"></b><span id="ql-sub"></span></div>
+    <span class="ql-count" id="ql-count"></span>
+    <button class="icon-btn" id="ql-close" title="Close (Esc or Space)"><span data-icon="x"></span></button>
+  </div>
+  <div class="ql-stage">
+    <button class="ql-nav" id="ql-prev" title="Previous (←)"><span data-icon="chevleft"></span></button>
+    <div class="ql-body" id="ql-body"></div>
+    <button class="ql-nav" id="ql-next" title="Next (→)"><span data-icon="chevron"></span></button>
+  </div>
+  <div class="ql-foot">
+    <div class="ql-meta" id="ql-meta"></div>
+    <label class="opt"><input type="checkbox" class="check" id="ql-pick"><span>Select for recovery <kbd>Enter</kbd></span></label>
+    <button class="btn primary" id="ql-save"><span data-icon="download"></span>Recover this file</button>
+  </div>
+</dialog>
+
 <dialog id="confirm-dialog">
   <div class="dlg-head"><h2 id="cf-title"></h2><p id="cf-text"></p></div>
   <div class="dlg-foot"><div class="grow"></div><button class="btn ghost" id="cf-no">Cancel</button><button class="btn primary" id="cf-yes">OK</button></div>

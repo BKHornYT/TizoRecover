@@ -110,6 +110,9 @@ _OPEN_EXISTING = 3
 _FILE_ATTRIBUTE_NORMAL = 0x00000080
 _FILE_FLAG_OVERLAPPED = 0x40000000
 _INVALID_HANDLE_VALUE = -1
+# A HANDLE restype comes back unsigned: INVALID_HANDLE_VALUE is 2**64 - 1 (or
+# 2**32 - 1 on 32-bit), never -1, so a refused open must be checked for all.
+_INVALID_HANDLES = {-1, (1 << 64) - 1, (1 << 32) - 1, None, 0}
 _ERROR_HANDLE_EOF = 38
 _ERROR_OPERATION_ABORTED = 995
 _ERROR_IO_PENDING = 997
@@ -339,13 +342,13 @@ class WindowsVolume:
             path, _GENERIC_READ, _FILE_SHARE_READ | _FILE_SHARE_WRITE, None,
             _OPEN_EXISTING, _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OVERLAPPED, None,
         )
-        if handle == _INVALID_HANDLE_VALUE or handle is None:
+        if handle in _INVALID_HANDLES:
             code = self._last_error()
             raise OSError(code, _winerror_text(code), path)
         self._handle = handle
 
         self._event = kernel32.CreateEventW(None, False, False, None)
-        if self._event == _INVALID_HANDLE_VALUE or self._event is None:
+        if self._event in _INVALID_HANDLES:
             code = self._last_error()
             kernel32.CloseHandle(handle)
             raise OSError(code, "could not create the read event", path)

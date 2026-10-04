@@ -12,6 +12,7 @@ class Strategy(str, Enum):
 
     CARVE = "carve"
     FAT = "fat"
+    EXFAT = "exfat"
     NTFS = "ntfs"
     EXT4 = "ext4"
     LIVE = "live"

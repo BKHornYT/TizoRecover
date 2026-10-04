@@ -25,6 +25,8 @@ from tizorecover.engine.blockdev import (BlockReader, DeviceBlockReader, VolumeA
 from tizorecover.engine.carver import carve_range
 from tizorecover.engine.drives import Drive
 from tizorecover.engine.formats import ByteSourceView
+from tizorecover.engine.partitions import PatchedReader
+from tizorecover.engine.fs import exfat as exfat_fs
 from tizorecover.engine.fs import fat as fat_fs
 from tizorecover.engine.fs import ntfs as ntfs_fs
 from tizorecover.engine.results import FileCandidate, Strategy
@@ -116,9 +118,14 @@ class Progress:
 def open_drive(drive: Drive) -> BlockReader:
     """A reader over exactly the drive's bytes, whatever kind of drive it is."""
     if drive.kind == "partition":
-        disk = DeviceBlockReader(drive.path)
-        return WindowBlockReader(disk, drive.offset, drive.offset + drive.size,
-                                 label=drive.id)
+        base = open_source(drive.path)
+        reader: BlockReader = WindowBlockReader(base, drive.offset, drive.offset + drive.size,
+                                                label=drive.id)
+        if drive.boot_patch >= 0:
+            # A file system whose first sectors were overwritten (a quick
+            # format): read its surviving copy in their place.
+            reader = PatchedReader(reader, base.read_at(drive.boot_patch, drive.patch_len))
+        return reader
     return open_source(drive.path)
 
 
@@ -355,8 +362,13 @@ class ScanJob:
                                            should_stop=stop):
                 self._add(cand)
         elif fs == "exfat":
-            self.problems.append("exFAT: deleted names are not read yet, so a quick scan "
-                                 "finds nothing. Run a deep scan to find files by content.")
+            self._stage("records", 0)
+            for cand in exfat_fs.recover_exfat(self.src, self.drive.id, progress=self._advance,
+                                               should_stop=stop):
+                self._add(cand)
+        elif fs.startswith("ext"):
+            self.problems.append("ext2/3/4 (Linux): reading names and folders is not supported yet. "
+                                 "All recovery methods still finds files by their content.")
         else:
             self.problems.append(f"No readable filesystem ({fs}). Run a deep scan to find "
                                  f"files by their content.")

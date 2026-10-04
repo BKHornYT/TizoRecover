@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import Iterator
 
+from tizorecover.engine.fs import exfat as exfat_fs
 from tizorecover.engine.fs import fat as fat_fs
 from tizorecover.engine.fs import ntfs as ntfs_fs
 
@@ -102,6 +103,17 @@ def from_fat(src) -> Allocation | None:
     return Allocation(f"fat{info.bits}", info.cluster_size, info.cluster_offset(2), used)
 
 
+def from_exfat(src) -> Allocation | None:
+    info = exfat_fs.find_exfat(src)
+    if info is None:
+        return None
+    bitmap = exfat_fs.load_bitmap(src, info)
+    if not bitmap:
+        return None
+    return Allocation("exfat", info.cluster_size, info.cluster_offset(2),
+                      _expand_bitmap(bitmap, info.cluster_count))
+
+
 def detect(src, filesystem: str) -> Allocation | None:
     """The allocation map for ``filesystem``, or None when it cannot be read."""
     try:
@@ -109,6 +121,8 @@ def detect(src, filesystem: str) -> Allocation | None:
             return from_ntfs(src)
         if filesystem in ("fat", "fat32"):
             return from_fat(src)
+        if filesystem == "exfat":
+            return from_exfat(src)
     except (OSError, ValueError, IndexError):
         return None
     return None
