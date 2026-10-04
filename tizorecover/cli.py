@@ -69,12 +69,13 @@ def _cmd_scan(args) -> int:
         print(f"  note: {problem}")
     items = job.snapshot()
     c = s["counts"]
-    print(f"Found {len(items)} file(s): {c.get('good', 0)} good, {c.get('partial', 0)} partial, "
-          f"{c.get('overwritten', 0)} overwritten. Filesystem: {s['filesystem']}.")
+    print(f"Found {len(items)} file(s). Recovery chances: {c.get('good', 0)} high, "
+          f"{c.get('partial', 0)} average, {c.get('overwritten', 0)} low. Filesystem: {s['filesystem']}.")
     if args.list or not args.output:
         for it in items:
             d = it.to_dict()
-            print(f"  [{d['status']:11s}] {human_size(d['size']):>10s}  "
+            chances = {"good": "high", "partial": "average", "overwritten": "low"}[d["status"]]
+            print(f"  [{chances:7s}] {human_size(d['size']):>10s}  "
                   f"{d['path'] or d['name']}  ({d['method']})")
     if args.output:
         wanted = [it for it in items if args.all or it.status != "overwritten"]

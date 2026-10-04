@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from tizorecover.engine import allocation as alloc_mod
+from tizorecover.engine import tzscan
 from tizorecover.engine import verify
 from tizorecover.engine.access import CandidateData, pieces_of
 from tizorecover.engine.blockdev import (BlockReader, DeviceBlockReader, VolumeAccessError,
@@ -32,6 +33,7 @@ from tizorecover.engine.scan import detect_filesystem
 QUICK = "quick"
 DEEP = "deep"
 MIN_FREE_RUN = 4096
+AUTOSAVE_EVERY = 60.0
 
 
 class LockedSource:
@@ -124,10 +126,19 @@ class ScanJob:
     """Runs one scan in the background and holds what it found."""
 
     def __init__(self, drive: Drive, mode: str = QUICK,
-                 on_item: Callable[[Item], None] | None = None) -> None:
+                 on_item: Callable[[Item], None] | None = None,
+                 resume: dict | None = None, autosave: str | None = None) -> None:
         self.drive = drive
         self.mode = mode
         self.on_item = on_item
+        self.resume = resume
+        self.autosave = autosave
+        self.fingerprint = ""
+        self.quick_done = False
+        self.deep_total = 0
+        self.last_carve_end = 0
+        self._saved_at = 0.0
+        self.resumed_from = None
         self.state = "starting"
         self.filesystem = "unknown"
         self.progress = Progress()
@@ -178,7 +189,41 @@ class ScanJob:
         return {"state": self.state, "mode": self.mode, "filesystem": self.filesystem,
                 "drive": self.drive.to_dict(), "found": total, "counts": counts,
                 "progress": self.progress.to_dict(), "problems": list(self.problems),
-                "free_bytes": self.free_bytes}
+                "free_bytes": self.free_bytes, "autosave": bool(self.autosave),
+                "resumed_from": self.resumed_from}
+
+    def save(self, path: str | None = None) -> str | None:
+        """Write this scan to ``path`` (default: its automatic save file)."""
+        path = path or self.autosave
+        if not path or not self.fingerprint:
+            return None
+        with self._lock:
+            items = [{"status": it.status, "notes": it.notes, "category": it.category,
+                      "candidate": tzscan.candidate_to_dict(it.candidate)} for it in self.items]
+        deep_done = self.progress.done if self.progress.stage == "deep" else (
+            self.deep_total if self.state == "done" and self.mode == DEEP else 0)
+        if self.resume and self.progress.stage != "deep" and self.state != "done":
+            deep_done = (self.resume.get("deep") or {}).get("done", 0)
+        state = {
+            "drive": self.drive.to_dict(), "fingerprint": self.fingerprint,
+            "filesystem": self.filesystem, "mode": self.mode,
+            "state": "running" if self.state in ("running", "starting") else self.state,
+            "quick_done": self.quick_done, "problems": list(self.problems),
+            "free_bytes": self.free_bytes,
+            "deep": {"done": deep_done, "total": self.deep_total, "last_carve_end": self.last_carve_end},
+            "items": items,
+        }
+        try:
+            tzscan.save(path, state)
+        except OSError as exc:
+            self.problems.append(f"could not save the scan: {exc}")
+            return None
+        self._saved_at = time.time()
+        return path
+
+    def _maybe_autosave(self) -> None:
+        if self.autosave and time.time() - self._saved_at > AUTOSAVE_EVERY:
+            self.save()
 
     def close(self) -> None:
         self.stop()
@@ -198,6 +243,8 @@ class ScanJob:
 
     def _advance(self, amount: int) -> None:
         self.progress.done += amount
+        if self.progress.stage == "deep":
+            self._maybe_autosave()
 
     def _add(self, candidate: FileCandidate) -> None:
         if candidate.strategy is Strategy.CARVE:
@@ -215,11 +262,40 @@ class ScanJob:
             item = Item(len(self.items), candidate, status, notes,
                         verify.category_of(candidate.ext))
             self.items.append(item)
-        pieces = pieces_of(candidate)
-        if candidate.strategy is not Strategy.CARVE and pieces and pieces[0][0] >= 0:
-            self._fs_starts.setdefault(pieces[0][0], item)
+        self._index(item)
+        if candidate.strategy is Strategy.CARVE:
+            self.last_carve_end = max(self.last_carve_end, candidate.data_offset + candidate.size)
         if self.on_item is not None:
             self.on_item(item)
+
+    def _index(self, item: Item) -> None:
+        pieces = pieces_of(item.candidate)
+        if item.candidate.strategy is not Strategy.CARVE and pieces and pieces[0][0] >= 0:
+            self._fs_starts.setdefault(pieces[0][0], item)
+
+    def _load_resume(self) -> bool:
+        """Take over a saved scan's results. False when the drive is not the same one."""
+        saved = self.resume
+        if saved.get("fingerprint") != self.fingerprint:
+            self.problems.append("This saved scan belongs to a different drive, or the drive has "
+                                 "changed since (it was formatted, or written to). Start a new scan.")
+            return False
+        if not saved.get("quick_done"):
+            # Stopped inside the quick pass: it is fast, run it all again.
+            self.resume = {**saved, "items": [], "deep": {}, "state": "stopped"}
+            self.resumed_from = saved.get("saved_at")
+            return True
+        with self._lock:
+            for i, raw in enumerate(saved.get("items", [])):
+                cand = tzscan.candidate_from_dict(raw["candidate"])
+                self.items.append(Item(i, cand, raw["status"], list(raw.get("notes", [])),
+                                       raw.get("category") or verify.category_of(cand.ext)))
+        for item in self.items:
+            self._index(item)
+        self.quick_done = bool(saved.get("quick_done"))
+        self.last_carve_end = int((saved.get("deep") or {}).get("last_carve_end") or 0)
+        self.resumed_from = saved.get("saved_at")
+        return True
 
     def _run(self) -> None:
         self.state = "running"
@@ -227,11 +303,25 @@ class ScanJob:
             self._stage("opening", 0)
             self.reader = open_drive(self.drive)
             self.src = LockedSource(ByteSourceView(self.reader))
+            self.fingerprint = tzscan.fingerprint(self.src)
             self.filesystem = detect_filesystem(self.src)
             self.allocation = alloc_mod.detect(self.src, self.filesystem)
             if self.allocation is not None:
                 self.free_bytes = self.allocation.free_bytes
-            self._quick()
+            if self.resume is not None:
+                if not self._load_resume():
+                    self.autosave = None          # never overwrite the other drive's save
+                    self.state = "failed"
+                    self.progress.stage = self.state
+                    return
+                if self.resume.get("state") == "done" and (self.mode == QUICK or
+                                                           self.resume.get("mode") == DEEP):
+                    self.state = "done"
+                    self.progress.stage = "done"
+                    return
+            if not self.quick_done:
+                self._quick()
+                self.quick_done = not self.stopping
             if self.mode == DEEP and not self.stopping:
                 self._deep()
             self.state = "stopped" if self.stopping else "done"
@@ -241,6 +331,8 @@ class ScanJob:
         except Exception as exc:  # the UI must hear about it, whatever it is
             self.problems.append(f"scan failed: {exc!r}")
             self.state = "failed"
+        if self.autosave and self.items and self.state in ("done", "stopped"):
+            self.save()
         self.progress.stage = self.state
 
     def _quick(self) -> None:
@@ -278,11 +370,28 @@ class ScanJob:
                 self.problems.append("Could not read which space is free, so the deep scan "
                                      "reads the whole drive and may also list files that "
                                      "still exist.")
-        self._stage("deep", sum(n for _o, n in ranges))
+        self.deep_total = sum(n for _o, n in ranges)
+        self._stage("deep", self.deep_total)
+        skip = 0
+        if self.resume is not None and self.resume.get("mode") == DEEP:
+            skip = min(int((self.resume.get("deep") or {}).get("done") or 0), self.deep_total)
+            self.progress.done = skip
         stop = self._stop.is_set
         for offset, length in ranges:
             if stop():
                 return
-            for cand in carve_range(self.src, self.drive.id, start=offset, end=offset + length,
+            if skip >= length:
+                skip -= length
+                continue
+            start = offset + skip
+            skip = 0
+            if self.last_carve_end > start:
+                # A file found just before the save runs on past the cut.
+                moved = min(self.last_carve_end, offset + length) - start
+                start += moved
+                self.progress.done += moved
+            if start >= offset + length:
+                continue
+            for cand in carve_range(self.src, self.drive.id, start=start, end=offset + length,
                                     progress=self._advance, should_stop=stop):
                 self._add(cand)

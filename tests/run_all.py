@@ -7,7 +7,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUITES = ["test_carver.py", "test_ntfs.py", "test_fat.py", "test_e2e.py", "test_session.py"]
+SUITES = ["test_carver.py", "test_ntfs.py", "test_fat.py", "test_e2e.py", "test_session.py",
+          "test_tzscan.py"]
 
 
 def main() -> int:

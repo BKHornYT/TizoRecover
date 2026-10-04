@@ -200,7 +200,7 @@ def make_bmp(width: int = 8, height: int = 8) -> bytes:
 
 
 def make_ico() -> bytes:
-    image = b"\x00" * 40
+    image = struct.pack("<IiiHHIIiiII", 40, 16, 32, 1, 32, 0, 0, 0, 0, 0, 0) + b"\x00" * 64
     entry = struct.pack("<BBBBHHII", 16, 16, 0, 0, 1, 32, len(image), 22)
     return b"\x00\x00\x01\x00\x01\x00" + entry + image
 

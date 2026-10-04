@@ -66,6 +66,10 @@ class Format:
     category: str = "document"
     confidence: float = 0.5
     back: int = 0
+    # Cheap test on the bytes already in memory (``buf`` holds the hit at
+    # ``i``). False rejects without touching the disk; whatever it cannot see
+    # (the header runs past ``buf``) must answer True and leave it to resolve.
+    quick: Callable[[bytes, int], bool] | None = None
 
 
 def _s8(src: ByteSource, off: int, n: int) -> bytes:
@@ -118,32 +122,89 @@ def _printable(data: bytes, ratio: float = 0.85) -> bool:
     return ok / len(data) >= ratio
 
 
+BLANK_BLOCK = 4096
+_ZERO_BLOCK = b"\x00" * BLANK_BLOCK
+
+
+def _until_blank(src: ByteSource, off: int, limit: int, cap: int) -> int:
+    """Where data that has no length field most likely ends.
+
+    Compressed media never holds 4 KiB of zeros, but the free space after a
+    deleted file usually does, so the first zero block (or ``limit``, or
+    ``cap``) is the best end there is. Returns an absolute offset.
+    """
+    end = min(limit, src.size, off + cap)
+    pos = off
+    step = 1 * MIB
+    while pos < end:
+        window = src.at(pos, min(step + BLANK_BLOCK, end - pos))
+        if not window:
+            break
+        idx = window.find(_ZERO_BLOCK)
+        if idx >= 0:
+            return pos + idx
+        if len(window) <= BLANK_BLOCK:
+            break
+        pos += len(window) - BLANK_BLOCK
+    return end
+
+
+def _have(buf: bytes, i: int, n: int) -> bool:
+    return i >= 0 and i + n <= len(buf)
+
+
 # --------------------------------------------------------------------------
 # JPEG
 # --------------------------------------------------------------------------
 
 
+# Markers that may follow SOI directly: APPn, DQT, DHT, SOFn, DRI, COM.
+_JPEG_FIRST = frozenset(range(0xE0, 0xF0)) | {0xDB, 0xC4, 0xC0, 0xC1, 0xC2, 0xDD, 0xFE}
+JPEG_MAX = 64 * MIB
+
+
+def _jpeg_quick(buf: bytes, i: int) -> bool:
+    if not _have(buf, i, 6):
+        return True
+    if buf[i + 3] not in _JPEG_FIRST:
+        return False
+    seg = int.from_bytes(buf[i + 4:i + 6], "big")
+    if seg < 2:
+        return False
+    nxt = i + 4 + seg
+    return not _have(buf, nxt, 1) or buf[nxt] == 0xFF
+
+
 def _jpeg_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
-    """Walk JPEG segments to the start of scan, then to the EOI marker."""
+    """Walk JPEG segments to the start of scan, then to the EOI marker.
+
+    Segments follow each other with no gap (only 0xFF fill bytes may sit
+    between them), so the walk is strict: random bytes that happen to start
+    with FF D8 FF fail within a marker or two instead of passing as a photo.
+    """
     end = min(limit, src.size)
     pos = off + 2
     reached_scan = False
-    while pos + 1 < end:
-        if src.at(pos, 1) != b"\xff":
-            pos += 1
-            continue
-        while src.at(pos, 1) == b"\xff":
-            pos += 1
-        marker = src.at(pos, 1)
-        if not marker:
+    first = True
+    while pos + 4 <= end:
+        head = src.at(pos, 4)
+        if len(head) < 4 or head[0] != 0xFF:
             return None
-        pos += 1
-        code = marker[0]
+        while head[1] == 0xFF:                       # fill bytes
+            pos += 1
+            head = src.at(pos, 4)
+            if len(head) < 4:
+                return None
+        code = head[1]
+        if first and code not in _JPEG_FIRST:
+            return None
+        first = False
+        pos += 2
         if code == 0xD9:
             return Extent(pos - off, Verdict.VALID, ["ends at EOI"])
-        if code == 0x01 or 0xD0 <= code <= 0xD7:
-            continue
-        seg_len = _u16be(src, pos)
+        if code in (0x00, 0x01) or 0xD0 <= code <= 0xD8:
+            return None                              # not allowed between segments
+        seg_len = int.from_bytes(head[2:4], "big")
         if seg_len < 2 or pos + seg_len > src.size:
             return None
         pos += seg_len
@@ -152,12 +213,24 @@ def _jpeg_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
             break
     if not reached_scan:
         return None
-    window = src.at(pos, min(8 * MIB, src.size - pos))
-    idx = window.find(b"\xff\xd9")
-    if idx == -1:
-        tail = min(src.size, pos + 8 * MIB)
-        return Extent(tail - off, Verdict.PARTIAL, ["entropy data truncated"], False)
-    return Extent(pos + idx + 2 - off, Verdict.VALID, ["ends at EOI after scan data"])
+    # FF D9 cannot occur inside entropy-coded data (a data FF is followed by
+    # 00), so the first one is the end. Search in steps: most photos are a
+    # few MB, and reading a fixed 8 MB per photo doubled the I/O of a scan.
+    scan_from = pos
+    stop = min(end, off + JPEG_MAX)
+    step = 1 * MIB
+    while pos < stop:
+        window = src.at(pos, min(step + 1, stop - pos))
+        if not window:
+            break
+        idx = window.find(b"\xff\xd9")
+        if idx >= 0:
+            return Extent(pos + idx + 2 - off, Verdict.VALID, ["ends at EOI after scan data"])
+        if len(window) <= 1:
+            break
+        pos += len(window) - 1
+    tail = _until_blank(src, scan_from, limit, JPEG_MAX)
+    return Extent(max(tail, scan_from) - off, Verdict.PARTIAL, ["entropy data truncated"], False)
 
 
 def _jpeg_validate(src: ByteSource, off: int, size: int) -> tuple[Verdict, list[str]]:
@@ -348,6 +421,11 @@ def _iso_resolver(brands: tuple[bytes, ...]):
 
 
 ISO_FINAL_BOXES = (b"mdat", b"moov", b"meta", b"mfra", b"free", b"skip", b"wide")
+# Boxes that may sit at the top level of a file. Anything else ends the chain:
+# it is the next file, or junk, never more of this one.
+ISO_TOP_BOXES = frozenset((b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"meta", b"mfra",
+                           b"uuid", b"pdin", b"moof", b"sidx", b"styp", b"emsg", b"prft", b"ssix",
+                           b"jumb", b"junk", b"pnot", b"PICT", b"Xtra", b"idat", b"iinf", b"iloc"))
 
 
 def _isobmff_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
@@ -359,18 +437,23 @@ def _isobmff_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
         size = _u32be(src, pos)
         btype = src.at(pos + 4, 4)
         header = 8
+        if btype not in ISO_TOP_BOXES or (btype == b"ftyp" and boxes):
+            break
         if size == 1:
             if not _need(src, pos + 8, 8):
                 break
             size = _u64be(src, pos + 8)
             header = 16
         elif size == 0:
-            if boxes == 0:
-                return None
-            return Extent(src.size - off, Verdict.SUSPECT, ["open-ended final box"], False)
-        if not _printable(btype, 0.9):
-            break
+            # "Runs to the end of the file": only a final mdat does that, and
+            # the end is where the data stops, not where the drive stops.
+            if btype != b"mdat" or boxes == 0:
+                break
+            end = _until_blank(src, pos + header, limit, 4 * 1024 * MIB)
+            return Extent(end - off, Verdict.SUSPECT, ["open-ended mdat, sized to the data"], False)
         if size < header or pos + size > src.size:
+            if boxes and btype == b"mdat":
+                return Extent(src.size - off, Verdict.PARTIAL, ["mdat runs past the data"], False)
             break
         boxes += 1
         last = btype
@@ -383,12 +466,92 @@ def _isobmff_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
     return Extent(pos - off, Verdict.SUSPECT, [f"{boxes} top-level boxes, ends after {name}"])
 
 
+def _ftyp_quick(buf: bytes, i: int) -> bool:
+    if not _have(buf, i, 12):
+        return True
+    size = int.from_bytes(buf[i:i + 4], "big")
+    return 12 <= size <= 4096 and size % 4 == 0 and all(32 <= b < 127 for b in buf[i + 8:i + 12])
+
+
 # --------------------------------------------------------------------------
 # ZIP and its many disguises (docx/xlsx/pptx/odt/jar/apk)
 # --------------------------------------------------------------------------
 
 
 _ZIP_END = (b"PK\x05\x06", b"PK\x07\x08")
+
+
+def _zip_by_eocd(src: ByteSource, off: int, limit: int) -> Extent | None:
+    """Find the end record whose central directory sits exactly before it.
+
+    Exact even for zips written with data descriptors (sizes after the data,
+    so walking local headers cannot step over them), which is how browsers,
+    Java and Office stream their zips.
+    """
+    end = min(limit, src.size, off + 64 * MIB)
+    pos = off
+    step = 4 * MIB
+    while pos < end:
+        window = src.at(pos, min(step + 22, end - pos))
+        if len(window) < 22:
+            return None
+        idx = window.find(b"PK")
+        while idx >= 0:
+            at = pos + idx
+            rec = src.at(at, 22)
+            if len(rec) == 22:
+                cd_size = int.from_bytes(rec[12:16], "little")
+                cd_off = int.from_bytes(rec[16:20], "little")
+                comment = int.from_bytes(rec[20:22], "little")
+                entries = int.from_bytes(rec[10:12], "little")
+                if off + cd_off + cd_size == at and src.at(off + cd_off, 4) == b"PK":
+                    return Extent(at + 22 + comment - off, Verdict.VALID,
+                                  [f"{entries} entries, central directory lines up with its end record"])
+                if cd_off == 0xFFFFFFFF:          # zip64: trust the walk instead
+                    return None
+            idx = window.find(b"PK", idx + 1)
+        pos += step
+    return None
+
+
+def _zip_name_ok(name: bytes, flags: int) -> bool:
+    if flags & 0x800:                                # UTF-8 names
+        try:
+            text = name.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return all(c.isprintable() for c in text)
+    return _printable(name, 0.8)
+
+
+_ZIP_RECORDS = (b"PK\x07\x08", b"PK\x03\x04", b"PK\x01\x02")
+ZIP_ENTRY_MAX = 4096 * MIB
+
+
+def _zip_next_record(src: ByteSource, data_off: int, end: int) -> int | None:
+    """Offset of the record after an entry whose sizes are in a data descriptor."""
+    pos = data_off
+    stop = min(end, data_off + ZIP_ENTRY_MAX)
+    step = 1 * MIB
+    while pos < stop:
+        window = src.at(pos, min(step + 3, stop - pos))
+        if len(window) < 4:
+            return None
+        hits = [i for i in (window.find(sig) for sig in _ZIP_RECORDS) if i >= 0]
+        if hits:
+            at = pos + min(hits)
+            if src.at(at, 4) == b"PK\x07\x08":
+                comp = _u32le(src, at + 8)
+                if comp == at - data_off:
+                    return at + 16
+                comp64 = _u64le(src, at + 8)
+                if comp64 == at - data_off:
+                    return at + 24
+                pos = at + 1                         # a PK\x07\x08 inside the data
+                continue
+            return at
+        pos += len(window) - 3
+    return None
 
 
 def _zip_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
@@ -401,16 +564,28 @@ def _zip_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
         if sig == b"PK\x03\x04":
             if pos + 30 > src.size:
                 break
+            flags = _u16le(src, pos + 6)
             method = _u16le(src, pos + 8)
             comp = _u32le(src, pos + 18)
             nlen = _u16le(src, pos + 26)
             elen = _u16le(src, pos + 28)
             name = src.at(pos + 30, nlen)
-            if nlen == 0 or not _printable(name, 0.8):
+            if nlen == 0 or not _zip_name_ok(name, flags):
                 return None
             if method not in (0, 8, 9, 12, 14, 93, 95, 98):
                 return None
             data_off = pos + 30 + nlen + elen
+            if flags & 0x08 and comp in (0, 0xFFFFFFFF):
+                # Sizes come after the data (a data descriptor): find where
+                # the next record starts instead.
+                nxt = _zip_next_record(src, data_off, min(limit, src.size))
+                if nxt is None:
+                    if entries == 0:
+                        return None
+                    return Extent(src.size - off, Verdict.PARTIAL, ["last entry truncated"], False)
+                entries += 1
+                pos = nxt
+                continue
             if data_off + comp > src.size:
                 if entries == 0:
                     return None
@@ -468,6 +643,10 @@ def _zip_validate(src: ByteSource, off: int, size: int) -> tuple[Verdict, list[s
 # --------------------------------------------------------------------------
 
 
+PDF_MAX = 512 * MIB
+PDF_TAIL = 2 * MIB
+
+
 def _pdf_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
     header = src.at(off, 8)
     if not header.startswith(b"%PDF-"):
@@ -475,11 +654,36 @@ def _pdf_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
     version = header[5:8].decode("ascii", "replace")
     if not version[0].isdigit():
         return None
-    window = src.at(off, min(limit - off, 8 * MIB))
-    eof = window.rfind(b"%%EOF")
+    # Read forward a step at a time. A PDF may carry several %%EOF (one per
+    # incremental save); the last one before the next PDF starts, or before
+    # a stretch with no further %%EOF, is the end.
+    window = b""
+    stop = min(limit, src.size, off + PDF_MAX)
+    eof = -1
+    pos = off
+    while pos < stop:
+        part = src.at(pos, min(1 * MIB, stop - pos))
+        if not part:
+            break
+        window += part
+        pos += len(part)
+        nxt = window.find(b"%PDF-", 5)
+        if nxt > 0:
+            window = window[:nxt]
+            eof = window.rfind(b"%%EOF")
+            break
+        last = window.rfind(b"%%EOF")
+        if last >= 0 and len(window) - last > PDF_TAIL:
+            eof = last
+            break
+        eof = last
     if eof < 0:
         return None
     end = off + eof + 5
+    for eol in (b"\r\n", b"\n", b"\r"):
+        if window[eof + 5:eof + 5 + len(eol)] == eol:
+            end += len(eol)
+            break
     reasons = [f"PDF {version}"]
     if b"startxref" in window:
         reasons.append("has xref table")
@@ -556,27 +760,79 @@ def _tiff_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
     return Extent(min(need, limit - off), Verdict.SUSPECT, [f"{count} IFD entries, no reliable length"])
 
 
+def _ico_entries_ok(head: bytes, count: int) -> bool:
+    for k in range(count):
+        e = head[6 + k * 16:22 + k * 16]
+        planes = int.from_bytes(e[4:6], "little")
+        bits = int.from_bytes(e[6:8], "little")
+        size = int.from_bytes(e[8:12], "little")
+        data_off = int.from_bytes(e[12:16], "little")
+        if e[3] != 0 or planes > 1 or bits not in (0, 1, 4, 8, 16, 24, 32):
+            return False
+        if size < 40 or size > 4 * MIB or data_off < 6 + 16 * count:
+            return False
+    return True
+
+
+def _ico_quick(buf: bytes, i: int) -> bool:
+    if not _have(buf, i, 22):
+        return True
+    count = int.from_bytes(buf[i + 4:i + 6], "little")
+    if not 1 <= count <= 64:
+        return False
+    if not _have(buf, i, 6 + count * 16):
+        return True
+    return _ico_entries_ok(buf[i:i + 6 + count * 16], count)
+
+
 def _ico_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
     head = src.at(off, 6)
     if len(head) < 6 or head[:4] != b"\x00\x00\x01\x00":
         return None
     count = _u16le(src, off + 4)
-    if count == 0 or count > 64 or not _need(src, off + 6, count * 16):
+    if count == 0 or count > 64:
+        return None
+    head = src.at(off, 6 + count * 16)
+    if len(head) < 6 + count * 16 or not _ico_entries_ok(head, count):
         return None
     end = off + 6 + count * 16
-    for i in range(count):
-        base = off + 6 + i * 16
-        planes = _u16le(src, base + 4)
-        bits = _u16le(src, base + 6)
-        if planes not in (0, 1) or bits not in (1, 4, 8, 16, 24, 32):
+    for k in range(count):
+        e = head[6 + k * 16:22 + k * 16]
+        size = int.from_bytes(e[8:12], "little")
+        data_off = int.from_bytes(e[12:16], "little")
+        image = src.at(off + data_off, 8)
+        # Every icon image is a PNG or a BITMAPINFOHEADER (its size, 40, first).
+        if not (image == b"\x89PNG\r\n\x1a\n" or image[:4] == b"\x28\x00\x00\x00"):
             return None
-        size = _u32le(src, base + 8)
-        data_off = _u32le(src, base + 12)
-        if data_off and size and data_off + size <= src.size:
-            end = max(end, off + data_off + size)
-    if end - off > 16 * MIB:
+        end = max(end, off + data_off + size)
+    if end - off > 16 * MIB or end > min(limit, src.size):
         return None
-    return Extent(end - off, Verdict.VALID, [f"{count} icon entries"])
+    return Extent(end - off, Verdict.VALID, [f"{count} icon entries, image headers check out"])
+
+
+def _bmp_quick(buf: bytes, i: int) -> bool:
+    if not _have(buf, i, 30):
+        return True
+    if buf[i + 6:i + 10] != b"\x00\x00\x00\x00":
+        return False
+    pixels_at = int.from_bytes(buf[i + 10:i + 14], "little")
+    dib = int.from_bytes(buf[i + 14:i + 18], "little")
+    planes = int.from_bytes(buf[i + 26:i + 28], "little")
+    bpp = int.from_bytes(buf[i + 28:i + 30], "little")
+    return (dib in (12, 40, 52, 56, 64, 108, 124) and planes == 1 and bpp in (1, 4, 8, 16, 24, 32)
+            and 14 + dib <= pixels_at < 64 * KIB)
+
+
+def _tiff_quick(buf: bytes, i: int) -> bool:
+    if not _have(buf, i, 8):
+        return True
+    order = "little" if buf[i] == 0x49 else "big"
+    ifd = int.from_bytes(buf[i + 4:i + 8], order)
+    if not 8 <= ifd <= 4 * MIB:
+        return False
+    if _have(buf, i + ifd, 2):
+        return 0 < int.from_bytes(buf[i + ifd:i + ifd + 2], order) <= 512
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -584,28 +840,80 @@ def _ico_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
 # --------------------------------------------------------------------------
 
 
+_MP3_BITRATES = {
+    (3, 3): (0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448),
+    (3, 2): (0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384),
+    (3, 1): (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
+    (2, 3): (0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256),
+    (2, 2): (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
+    (2, 1): (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
+}
+_MP3_RATES = {3: (44100, 48000, 32000), 2: (22050, 24000, 16000), 0: (11025, 12000, 8000)}
+MP3_MIN_FRAMES = 6
+
+
+def _mp3_frame_len(h: bytes) -> int:
+    """Length of the MPEG audio frame whose 4-byte header is ``h``, or 0."""
+    if len(h) < 4 or h[0] != 0xFF or (h[1] & 0xE0) != 0xE0:
+        return 0
+    version = (h[1] >> 3) & 3
+    layer = (h[1] >> 1) & 3
+    br_idx = h[2] >> 4
+    sr_idx = (h[2] >> 2) & 3
+    if version == 1 or layer == 0 or br_idx in (0, 15) or sr_idx == 3 or (h[3] & 3) == 2:
+        return 0
+    rate = _MP3_RATES[version][sr_idx]
+    kbps = _MP3_BITRATES[(3 if version == 3 else 2, layer)][br_idx]
+    pad = (h[2] >> 1) & 1
+    if layer == 3:                                    # layer I
+        return (12 * kbps * 1000 // rate + pad) * 4
+    if layer == 1 and version != 3:                   # layer III, MPEG-2/2.5
+        return 72 * kbps * 1000 // rate + pad
+    return 144 * kbps * 1000 // rate + pad
+
+
+def _mp3_quick(buf: bytes, i: int) -> bool:
+    if buf[i:i + 3] == b"ID3":
+        return _have(buf, i, 10) and buf[i + 3] in (2, 3, 4) and all(b < 0x80 for b in buf[i + 6:i + 10])
+    n = _mp3_frame_len(buf[i:i + 4])
+    if not n:
+        return False
+    nxt = buf[i + n:i + n + 4]
+    return len(nxt) < 4 or _mp3_frame_len(nxt) > 0
+
+
 def _mp3_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
-    head = src.at(off, 3)
+    """Step frame by frame; the file ends where the frames stop."""
+    end = min(limit, src.size)
     pos = off
-    if head[:3] == b"ID3":
+    tagged = False
+    if src.at(off, 3) == b"ID3":
         size = 0
         for b in src.at(off + 6, 4):
             size = (size << 7) | (b & 0x7F)
         pos = off + 10 + size
-        if src.at(pos, 1) != b"\xff":
-            return None
-    head = src.at(pos, 4)
-    if len(head) < 2 or head[0] != 0xFF or (head[1] & 0xE0) != 0xE0:
+        tagged = True
+    frames = 0
+    window_at, window = pos, src.at(pos, min(1 * MIB, max(0, end - pos)))
+    while pos + 4 <= end:
+        rel = pos - window_at
+        if rel + 4 > len(window):
+            window_at, window = pos, src.at(pos, min(1 * MIB, end - pos))
+            rel = 0
+            if len(window) < 4:
+                break
+        n = _mp3_frame_len(window[rel:rel + 4])
+        if not n:
+            break
+        frames += 1
+        pos += n
+    if frames < (2 if tagged else MP3_MIN_FRAMES):
         return None
-    window = src.at(pos, min(2 * MIB, src.size - pos))
-    tail = src.rfind(b"TAG")
-    end = pos + len(window) - 1
-    if tail > 0x32:
-        end = pos + tail
-    if window.rfind(b"\xff\xfb") > 0x1000 and window.rfind(b"\xff\xfb") < end - pos:
-        end = pos + window.rfind(b"\xff\xfb")
-    return Extent(max(end - off, 4096), Verdict.SUSPECT,
-                  ["no reliable MP3 end marker; sized to next frame or ID3v1"])
+    pos = min(pos, end)
+    if src.at(pos, 3) == b"TAG" and pos + 128 <= end:
+        pos += 128
+    verdict = Verdict.VALID if frames >= 30 else Verdict.SUSPECT
+    return Extent(pos - off, verdict, [f"{frames} MPEG audio frames"])
 
 
 def _flac_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
@@ -623,7 +931,8 @@ def _flac_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
         if btype == 127:
             return None
         if last:
-            return Extent(src.size - off, Verdict.SUSPECT, ["audio frames have no end marker"])
+            end = _until_blank(src, pos, limit, 512 * MIB)
+            return Extent(end - off, Verdict.SUSPECT, ["audio frames have no end marker; sized to the data"])
     return None
 
 
@@ -651,10 +960,18 @@ def _ogg_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
 # --------------------------------------------------------------------------
 
 _GZIP_MAGICS = (b"\x1f\x8b\x08",)
+GZIP_PROBE = 64 * MIB
+
+
+def _gzip_quick(buf: bytes, i: int) -> bool:
+    if not _have(buf, i, 10):
+        return True
+    return buf[i + 3] & 0xE0 == 0 and buf[i + 8] in (0, 2, 4) and (buf[i + 9] <= 13 or buf[i + 9] == 255)
 
 
 def _gzip_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
-    if not src.at(off, 3).startswith(_GZIP_MAGICS):
+    head = src.at(off, 10)
+    if not head.startswith(_GZIP_MAGICS) or not _gzip_quick(head, 0):
         return None
     flg = _u8(src, off + 3)
     pos = off + 10
@@ -669,23 +986,28 @@ def _gzip_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
         pos += 2
     if pos >= src.size:
         return None
-    probe_len = min(16 * MIB, src.size - pos)
-    probe = src.at(pos, probe_len)
+    # Feed the stream a step at a time: most .gz files are small, and reading
+    # a fixed 16 MB per hit made a folder of them crawl on a real drive.
+    stop = min(src.size, limit, pos + GZIP_PROBE)
     decomp = zlib.decompressobj(-zlib.MAX_WBITS)
     fed = 0
+    step = 64 * KIB
     try:
-        while fed < len(probe):
-            chunk = probe[fed:fed + 128 * KIB]
+        while pos + fed < stop:
+            chunk = src.at(pos + fed, min(step, stop - pos - fed))
             if not chunk:
                 break
-            decomp.decompress(chunk)
+            decomp.decompress(chunk, 1 * MIB)
             fed += len(chunk)
             if decomp.eof:
                 used = fed - len(decomp.unused_data)
                 return Extent(pos + used + 8 - off, Verdict.VALID,
                               ["deflate stream ends cleanly, CRC and length trailer in range"])
+            step = min(step * 2, 1 * MIB)
     except zlib.error:
-        pass
+        return None
+    if fed < 64 * KIB:
+        return None
     used = fed - len(decomp.unused_data)
     return Extent(max(pos + used - off, MIN_EXTENT), Verdict.PARTIAL,
                   ["deflate stream truncated"], False)
@@ -795,7 +1117,17 @@ def _elf_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
         total = e_shoff + e_shentsize * e_shnum
         if off + total <= src.size and total < 512 * MIB:
             return Extent(total, Verdict.VALID, ["length from section header table"])
-    return Extent(min(limit - off, 16 * MIB), Verdict.SUSPECT, ["no section table; using max size"])
+    end = _until_blank(src, off, limit, 16 * MIB)
+    return Extent(end - off, Verdict.SUSPECT, ["no section table; sized to the data"])
+
+
+def _pe_quick(buf: bytes, i: int) -> bool:
+    if not _have(buf, i, 0x40):
+        return True
+    pe_off = int.from_bytes(buf[i + 0x3C:i + 0x40], "little")
+    if not 0x40 <= pe_off < 64 * KIB:
+        return False
+    return not _have(buf, i + pe_off, 4) or buf[i + pe_off:i + pe_off + 4] == b"PE\x00\x00"
 
 
 def _pe_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
@@ -809,16 +1141,32 @@ def _pe_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
     opt_size = _u16le(src, coff + 16)
     if sections == 0 or sections > 96:
         return None
-    sec_table = coff + 20 + opt_size
-    end = src.size - off
-    for i in range(sections):
-        base = sec_table + i * 40
-        raw_ptr = _u32le(src, base + 20)
-        raw_size = _u32le(src, base + 16)
-        end = max(end, raw_ptr + raw_size)
+    opt = coff + 20
+    magic = _u16le(src, opt)
+    if magic not in (0x10B, 0x20B):
+        return None
+    end = _u32le(src, opt + 60)                       # SizeOfHeaders
+    table = src.at(opt + opt_size, sections * 40)
+    if len(table) < sections * 40:
+        return None
+    for k in range(sections):
+        raw_size = int.from_bytes(table[k * 40 + 16:k * 40 + 20], "little")
+        raw_ptr = int.from_bytes(table[k * 40 + 20:k * 40 + 24], "little")
+        if raw_size:
+            end = max(end, raw_ptr + raw_size)
+    notes = [f"{sections} sections"]
+    # A signed file carries its certificate after the last section.
+    dirs_at = 96 if magic == 0x10B else 112
+    if opt_size >= dirs_at + 5 * 8:
+        cert_off, cert_size = _u32le(src, opt + dirs_at + 32), _u32le(src, opt + dirs_at + 36)
+        if cert_off and cert_size and cert_off >= end and cert_off + cert_size < 1024 * MIB:
+            end = cert_off + cert_size
+            notes.append("signature included")
+    if end <= 0 or end > 2048 * MIB:
+        return None
     if off + end > src.size:
-        return Extent(src.size - off, Verdict.PARTIAL, [f"{sections} sections, data truncated"], False)
-    return Extent(end, Verdict.VALID, [f"{sections} sections, last section ends at {end:#x}"])
+        return Extent(src.size - off, Verdict.PARTIAL, notes + ["data truncated"], False)
+    return Extent(end, Verdict.VALID, notes + [f"ends at {end:#x}"])
 
 
 # --------------------------------------------------------------------------
@@ -853,17 +1201,17 @@ def _xml_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
 
 FORMATS: tuple[Format, ...] = (
     Format("jpeg", "jpg", (b"\xff\xd8\xff",), 64 * MIB, b"\xff\xd9",
-           _jpeg_walk, _jpeg_validate, "image", 0.9),
+           _jpeg_walk, _jpeg_validate, "image", 0.9, quick=_jpeg_quick),
     Format("png", "png", (b"\x89PNG\r\n\x1a\n",), 64 * MIB, b"IEND",
            _png_walk, _png_validate, "image", 0.9),
     Format("gif", "gif", (b"GIF87a", b"GIF89a"), 32 * MIB, b"\x3b",
            _gif_walk, None, "image", 0.7),
     Format("bmp", "bmp", (b"BM",), 128 * MIB, None,
-           _bmp_walk, None, "image", 0.75),
+           _bmp_walk, None, "image", 0.75, quick=_bmp_quick),
     Format("ico", "ico", (b"\x00\x00\x01\x00",), 8 * MIB, None,
-           _ico_walk, None, "image", 0.6),
+           _ico_walk, None, "image", 0.6, quick=_ico_quick),
     Format("tiff", "tif", (b"II\x2a\x00", b"MM\x00\x2a"), 128 * MIB, None,
-           _tiff_walk, None, "image", 0.6),
+           _tiff_walk, None, "image", 0.6, quick=_tiff_quick),
     Format("webp", "webp", (b"RIFF",), 64 * MIB, None,
            lambda s, o, l: _riff_walk(s, o, l) if s.at(o + 8, 4) == b"WEBP" else None,
            _riff_validate, "image", 0.85),
@@ -874,19 +1222,19 @@ FORMATS: tuple[Format, ...] = (
            lambda s, o, l: _riff_walk(s, o, l) if s.at(o + 8, 4) == b"AVI " else None,
            _riff_validate, "video", 0.85),
     Format("mp4", "mp4", (b"ftyp",), 4 * 1024 * MIB, None,
-           _iso_resolver(ISO_BRANDS["mp4"]), None, "video", 0.85, back=4),
+           _iso_resolver(ISO_BRANDS["mp4"]), None, "video", 0.85, back=4, quick=_ftyp_quick),
     Format("mov", "mov", (b"ftyp",), 4 * 1024 * MIB, None,
-           _iso_resolver(ISO_BRANDS["mov"]), None, "video", 0.8, back=4),
+           _iso_resolver(ISO_BRANDS["mov"]), None, "video", 0.8, back=4, quick=_ftyp_quick),
     Format("heic", "heic", (b"ftyp",), 512 * MIB, None,
-           _iso_resolver(ISO_BRANDS["heic"]), None, "image", 0.85, back=4),
+           _iso_resolver(ISO_BRANDS["heic"]), None, "image", 0.85, back=4, quick=_ftyp_quick),
     Format("zip", "zip", (b"PK\x03\x04",), 2048 * MIB, b"PK\x05\x06",
-           _zip_walk, _zip_validate, "archive", 0.85),
+           lambda s, o, l: _zip_walk(s, o, l) or _zip_by_eocd(s, o, l), _zip_validate, "archive", 0.85),
     Format("pdf", "pdf", (b"%PDF-",), 512 * MIB, b"%%EOF",
            _pdf_walk, None, "document", 0.8),
     Format("sqlite", "sqlite", (b"SQLite format 3\x00",), 4096 * MIB, None,
            _sqlite_walk, None, "database", 0.9),
     Format("gzip", "gz", _GZIP_MAGICS, 1024 * MIB, None,
-           _gzip_walk, None, "archive", 0.7),
+           _gzip_walk, None, "archive", 0.7, quick=_gzip_quick),
     Format("7z", "7z", (b"7z\xbc\xaf\x27\x1c",), 1024 * MIB, None,
            _7z_walk, None, "archive", 0.85),
     Format("rar", "rar", (b"Rar!\x1a\x07",), 1024 * MIB, None,
@@ -896,15 +1244,15 @@ FORMATS: tuple[Format, ...] = (
     Format("elf", "elf", (b"\x7fELF",), 512 * MIB, None,
            _elf_walk, None, "executable", 0.7),
     Format("pe", "exe", (b"MZ",), 2048 * MIB, None,
-           _pe_walk, None, "executable", 0.5),
+           _pe_walk, None, "executable", 0.5, quick=_pe_quick),
     Format("flac", "flac", (b"fLaC",), 512 * MIB, None,
            _flac_walk, None, "audio", 0.75),
     Format("ogg", "ogg", (b"OggS",), 512 * MIB, None,
            _ogg_walk, None, "audio", 0.75),
     Format("svg", "svg", (b"<svg", b"<?xml"), 32 * MIB, None,
            _xml_walk, None, "image", 0.5),
-    Format("mp3", "mp3", (b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"), 64 * MIB, None,
-           _mp3_walk, None, "audio", 0.55),
+    Format("mp3", "mp3", (b"ID3", b"\xff\xfb", b"\xff\xfa", b"\xff\xf3", b"\xff\xf2"), 64 * MIB,
+           None, _mp3_walk, None, "audio", 0.55, quick=_mp3_quick),
 )
 
 BY_MAGIC: dict[bytes, list[Format]] = {}

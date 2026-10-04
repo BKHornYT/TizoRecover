@@ -58,6 +58,7 @@ class Drive:
     removable: bool
     system: bool
     partition: int = 0
+    disk_size: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -115,7 +116,7 @@ def _windows_drives() -> list[Drive]:
             free=p.get("free") or 0, disk=p["disk"], disk_name=disk.get("name", ""),
             bus=bus, media=media.get(str(p["disk"]), ""),
             removable=bus in ("USB", "SD", "MMC"), system=bool(disk.get("system") or disk.get("boot")),
-            partition=p["num"],
+            partition=p["num"], disk_size=int(disk.get("size") or 0),
         ))
     drives.sort(key=lambda d: (not d.removable, d.system, d.disk, d.partition))
     return drives
@@ -159,7 +160,7 @@ def _linux_drives() -> list[Drive]:
             id=name, kind="volume", path=dev, offset=0, size=sectors * 512, label="",
             letter="", filesystem=mounts.get(dev, "unknown"), free=0, disk=0,
             disk_name=parent, bus="USB" if removable else "", media="HDD" if rotational else "SSD",
-            removable=removable, system=False,
+            removable=removable, system=False, disk_size=sectors * 512,
         ))
     drives.sort(key=lambda d: (not d.removable, d.path))
     return drives
@@ -178,7 +179,7 @@ def image_drive(path: str) -> Drive:
     return Drive(id="img:" + os.path.abspath(path), kind="image", path=os.path.abspath(path),
                  offset=0, size=size, label=os.path.basename(path), letter="",
                  filesystem="unknown", free=0, disk=-1, disk_name="Disk image", bus="File",
-                 media="", removable=False, system=False)
+                 media="", removable=False, system=False, disk_size=size)
 
 
 def disk_of_path(path: str, drives: list[Drive]) -> int | None:

@@ -15,6 +15,8 @@ Two passes run here:
 from __future__ import annotations
 
 import bisect
+import re
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Iterable, Iterator
 
 from tizorecover.engine.blockdev import DEFAULT_CHUNK
@@ -22,7 +24,7 @@ from tizorecover.engine.formats import BY_MAGIC, FORMATS, MAX_MAGIC, Format, Ext
 from tizorecover.engine.results import FileCandidate, Strategy, Verdict
 
 MIN_SIZE = 8
-HEARTBEAT = 64
+HEARTBEAT = 16
 
 
 class _Claims:
@@ -92,19 +94,91 @@ def _blank(buf: bytes) -> bool:
     return buf == ref
 
 
+_MAGIC_RE = re.compile(b"|".join(re.escape(m) for m in sorted(BY_MAGIC, key=len, reverse=True)))
+
+
 def _header_hits(buf: bytes, buf_off: int, formats: set[Format]) -> Iterator[tuple[int, Format]]:
-    for magic, candidates in BY_MAGIC.items():
-        matched = [f for f in candidates if f in formats]
-        if not matched:
-            continue
-        start = 0
-        while True:
-            idx = buf.find(magic, start)
-            if idx < 0:
-                break
-            for fmt in matched:
-                yield buf_off + idx - fmt.back, fmt
-            start = idx + 1
+    """Every (offset, format) whose magic is in ``buf``, in disk order.
+
+    One regex pass finds all magics at C speed; each hit is then put through
+    the format's in-memory ``quick`` check, so the common false alarms (an
+    ``MZ`` or an MPEG frame sync inside some video) never cost a disk read.
+    """
+    for m in _MAGIC_RE.finditer(buf):
+        idx = m.start()
+        for fmt in BY_MAGIC[m.group()]:
+            if fmt not in formats:
+                continue
+            i = idx - fmt.back
+            if fmt.quick is not None and i >= 0 and not fmt.quick(buf, i):
+                continue
+            yield buf_off + i, fmt
+
+
+class CachedSource:
+    """Small reads served from a few cached 1 MiB blocks.
+
+    Format walkers step through a file a few bytes at a time (segment
+    headers, box sizes, one byte at a time through JPEG data). On a raw
+    device every one of those is a sector read, which made a single photo
+    take half a minute on a USB stick; through this cache they cost a slice.
+    """
+
+    BLOCK = 1 << 20
+    KEEP = 6
+
+    def __init__(self, src) -> None:
+        self._src = src
+        self.size = src.size
+        self._blocks: dict[int, bytes] = {}
+
+    def _block(self, index: int) -> bytes:
+        got = self._blocks.get(index)
+        if got is None:
+            if len(self._blocks) >= self.KEEP:
+                self._blocks.pop(next(iter(self._blocks)))
+            got = self._src.at(index * self.BLOCK, self.BLOCK)
+            self._blocks[index] = got
+        else:
+            self._blocks[index] = self._blocks.pop(index)  # most recently used last
+        return got
+
+    def at(self, offset: int, length: int) -> bytes:
+        if offset < 0 or length <= 0 or offset >= self.size:
+            return b""
+        length = min(length, self.size - offset)
+        if length > 2 * self.BLOCK:
+            return self._src.at(offset, length)
+        first, last = offset // self.BLOCK, (offset + length - 1) // self.BLOCK
+        if first == last:
+            start = offset - first * self.BLOCK
+            return self._block(first)[start:start + length]
+        data = b"".join(self._block(i) for i in range(first, last + 1))
+        start = offset - first * self.BLOCK
+        return data[start:start + length]
+
+
+class _Prefetch:
+    """Reads the next chunk on a helper thread while this one is searched."""
+
+    def __init__(self, src) -> None:
+        self._src = src
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tizo-read")
+        self._next: tuple[int, int, Future] | None = None
+
+    def get(self, pos: int, want: int) -> bytes:
+        nxt = self._next
+        self._next = None
+        if nxt is not None and nxt[0] == pos and nxt[1] == want:
+            return nxt[2].result()
+        return self._src.at(pos, want)
+
+    def ahead(self, pos: int, want: int) -> None:
+        if want > 0:
+            self._next = (pos, want, self._pool.submit(self._src.at, pos, want))
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=True, cancel_futures=True)
 
 
 def carve_range(
@@ -119,67 +193,77 @@ def carve_range(
     should_stop: Callable[[], bool] | None = None,
     on_found: Callable[[FileCandidate], None] | None = None,
 ) -> Iterator[FileCandidate]:
-    """Forward-carve every recognisable file in ``[start, end)``."""
+    """Forward-carve every recognisable file in ``[start, end)``.
+
+    Hits are handled in disk order and a found file's bytes are skipped (not
+    even read), the way PhotoRec does it: a photo embedded in a video is part
+    of the video, not a file of its own, and a long video costs no searching.
+    """
     wanted = tuple(formats) if formats is not None else FORMATS
     wanted_set = set(wanted)
     end = src.size if end is None else min(end, src.size)
-    claims = _Claims()
     overlap = MAX_MAGIC
     pos = start
-    scanned = 0
+    skip_until = start
     pulses = 0
-
-    while pos < end:
-        if should_stop is not None and should_stop():
-            return
-        want = min(chunk + overlap, end - pos)
-        buf = src.at(pos, want)
-        if not buf:
-            return
-        # Empty space (zeros, or 0xFF on erased flash) holds no headers; one
-        # comparison skips it at memory speed instead of a search per magic.
-        if _blank(buf):
-            pos += chunk
-            scanned += want
+    reader = _Prefetch(src)
+    walk_src = CachedSource(src)
+    try:
+        while pos < end:
+            if should_stop is not None and should_stop():
+                return
+            if skip_until > pos:
+                # Inside a file already found: jump over it without reading.
+                jump = min(skip_until, end) - pos
+                pos += jump
+                if progress is not None:
+                    progress(jump)
+                continue
+            want = min(chunk + overlap, end - pos)
+            buf = reader.get(pos, want)
+            if not buf:
+                return
+            if pos + chunk < end:
+                reader.ahead(pos + chunk, min(chunk + overlap, end - pos - chunk))
+            # Empty space (zeros, or 0xFF on erased flash) holds no headers; one
+            # comparison skips it at memory speed instead of a search.
+            if not _blank(buf):
+                for offset, fmt in _header_hits(buf, pos, wanted_set):
+                    pulses += 1
+                    if pulses % HEARTBEAT == 0:
+                        if progress is not None:
+                            progress(0)
+                        if should_stop is not None and should_stop():
+                            return
+                    if offset < max(pos, skip_until) or offset >= end:
+                        continue
+                    resolver = fmt.resolve
+                    if resolver is None:
+                        continue
+                    try:
+                        extent = resolver(walk_src, offset, end)
+                    except Exception:
+                        continue
+                    if extent is None or extent.size < min_size:
+                        continue
+                    stop = offset + extent.size
+                    if stop > src.size:
+                        continue
+                    skip_until = stop
+                    cand = _candidate(fmt, walk_src, offset, extent, volume)
+                    if on_found is not None:
+                        on_found(cand)
+                    yield cand
+            # A file found here may run past this chunk; the jump at the top
+            # of the loop counts the rest of it.
+            step = min(chunk, end - pos)
+            pos += step
             if progress is not None:
-                progress(want)
+                progress(step)
             if len(buf) < want:
                 return
-            continue
-        for offset, fmt in _header_hits(buf, pos, wanted_set):
-            # Resolving a hit reads that file's whole extent, so a chunk full
-            # of video can take minutes. A zero-byte pulse keeps the caller
-            # informed without corrupting its byte total.
-            pulses += 1
-            if progress is not None and pulses % HEARTBEAT == 0:
-                progress(0)
-            if offset < pos or offset >= end:
-                continue
-            if claims.claimed(offset, offset + 1):
-                continue
-            resolver = fmt.resolve
-            if resolver is None:
-                continue
-            try:
-                extent = resolver(src, offset, end)
-            except Exception:
-                continue
-            if extent is None or extent.size < min_size:
-                continue
-            stop = offset + extent.size
-            if stop > src.size:
-                continue
-            claims.add(offset, stop)
-            cand = _candidate(fmt, src, offset, extent, volume)
-            if on_found is not None:
-                on_found(cand)
-            yield cand
-        pos += chunk
-        scanned += want
-        if progress is not None:
-            progress(want)
-        if len(buf) < want:
-            return
+    finally:
+        reader.close()
 
 
 ORPHAN_FOOTERS: tuple[tuple[bytes, Format], ...] = tuple(

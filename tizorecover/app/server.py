@@ -16,6 +16,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -28,6 +29,7 @@ from urllib.parse import parse_qs, urlparse
 from tizorecover import APP_NAME, __version__
 from tizorecover.engine import drives as drives_mod
 from tizorecover.engine.erase import EraseError, EraseJob, Planner
+from tizorecover.engine import tzscan
 from tizorecover.engine.session import DEEP, QUICK, ScanJob
 from tizorecover.engine.writer import save_items
 from tizorecover.app.update import Updater
@@ -51,6 +53,7 @@ TEXT_EXTS = {"txt", "md", "csv", "log", "ini", "cfg", "json", "xml", "html", "ht
              "sh", "ps1", "bat", "css", "sql", "lua", "srt", "vtt", "toml", "rtf", "svg"}
 OFFICE_TEXT = {"docx": "word/document.xml", "pptx": "ppt/slides/", "xlsx": "xl/sharedStrings.xml",
                "odt": "content.xml", "ods": "content.xml", "odp": "content.xml"}
+CHANCES = {"good": "High", "partial": "Average", "overwritten": "Low"}
 TEXT_LIMIT = 256 << 10
 OFFICE_LIMIT = 64 << 20
 
@@ -86,10 +89,24 @@ class App:
     def find_drive(self, drive_id: str) -> drives_mod.Drive | None:
         return next((d for d in self.all_drives() if d.id == drive_id), None)
 
-    def start_scan(self, drive: drives_mod.Drive, mode: str) -> None:
+    def start_scan(self, drive: drives_mod.Drive, mode: str, resume: dict | None = None) -> None:
         if self.job is not None:
             self.job.close()
-        self.job = ScanJob(drive, DEEP if mode == DEEP else QUICK).start()
+        mode = DEEP if mode == DEEP else QUICK
+        if resume is not None and resume.get("mode") == DEEP:
+            mode = DEEP
+        self.job = ScanJob(drive, mode, resume=resume, autosave=tzscan.auto_path(drive)).start()
+
+    def saved_scans(self) -> list[dict]:
+        """Saved scans, each tied to a drive that is plugged in now (or ``drive_id`` None)."""
+        by_key = {tzscan.drive_key(d): d for d in self.all_drives()}
+        out = []
+        for info in tzscan.list_saved():
+            key = os.path.basename(info["path"])[:-len(tzscan.SUFFIX)]
+            drive = by_key.get(key)
+            info["drive_id"] = drive.id if drive is not None else None
+            out.append(info)
+        return out
 
     def pick(self, kind: str) -> str | None:
         """Native folder/file dialog: pywebview's when there is a window, else tkinter."""
@@ -100,8 +117,9 @@ class App:
             else:
                 got = self.window.create_file_dialog(
                     webview.FileDialog.OPEN,
-                    file_types=("Disk images (*.img;*.dd;*.raw;*.bin;*.iso;*.001)",
-                                "All files (*.*)"))
+                    file_types=(("Saved scans (*.tzscan)",) if kind == "tzscan" else
+                                ("Disk images (*.img;*.dd;*.raw;*.bin;*.iso;*.001)",))
+                    + ("All files (*.*)",))
             if not got:
                 return None
             return got[0] if isinstance(got, (list, tuple)) else got
@@ -164,11 +182,33 @@ def _write_report(dest: str, job: ScanJob, items, failed) -> str:
             for it in items:
                 c = it.candidate
                 mark = "FAILED " if (c.name in failed_names) else ""
-                fh.write(f"{mark}[{it.status}] {c.original_path or c.display_name}  "
+                chances = CHANCES.get(it.status, it.status)
+                fh.write(f"{mark}[{chances} chances] {c.original_path or c.display_name}  "
                          f"({c.size:,} bytes, {c.strategy.value})\n")
     except OSError:
         return ""
     return path
+
+
+def _space(dest: str, need: int, error: str) -> dict:
+    """Free space where ``dest`` would land; an error when the files will not fit."""
+    if not dest or not os.path.isabs(dest):
+        return {}
+    probe = dest
+    while probe and not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    try:
+        usage = shutil.disk_usage(probe)
+    except OSError:
+        return {}
+    out = {"free": usage.free, "total": usage.total, "root": os.path.splitdrive(probe)[0] or probe}
+    if not error and need > usage.free:
+        out["error"] = (f"Not enough space there: the files need {need / 1e9:.1f} GB but only "
+                        f"{usage.free / 1e9:.1f} GB is free.")
+    return out
 
 
 def _office_text(data: bytes, ext: str) -> str:
@@ -296,6 +336,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"items": [it.to_dict() for it in chunk], "total": len(snap)})
         if path == "/api/recover":
             return self._json(app.recover)
+        if path == "/api/saved":
+            return self._json({"saved": app.saved_scans()})
         if path == "/api/update":
             return self._json(app.updater.check())
         if path == "/api/update/status":
@@ -325,7 +367,36 @@ class Handler(BaseHTTPRequestHandler):
             drive = app.find_drive(str(body.get("drive", "")))
             if drive is None:
                 return self._error("unknown drive")
-            app.start_scan(drive, str(body.get("mode", QUICK)))
+            resume = None
+            if body.get("resume"):
+                try:
+                    resume = tzscan.load(tzscan.auto_path(drive))
+                except (OSError, ValueError, EOFError) as exc:
+                    return self._error(f"Could not open the saved scan: {exc}")
+            app.start_scan(drive, str(body.get("mode", QUICK)), resume)
+            return self._json({"ok": True})
+        if path == "/api/scan/open":
+            try:
+                saved = tzscan.load(str(body.get("path", "")))
+            except (OSError, ValueError, EOFError) as exc:
+                return self._error(f"That is not a scan TizoRecover can open: {exc}")
+            want = saved.get("drive") or {}
+            drive = next((d for d in app.all_drives(refresh=True)
+                          if d.id == want.get("id") and d.size == want.get("size")), None)
+            if drive is None:
+                name = want.get("letter") and f"{want.get('letter')}: " or ""
+                return self._error(f"Plug in the drive this scan came from ({name}{want.get('label') or want.get('disk_name') or 'unknown'}, "
+                                   f"{(want.get('size') or 0) / 1e9:.1f} GB), then open it again.")
+            app.start_scan(drive, saved.get("mode", QUICK), saved)
+            return self._json({"ok": True, "drive": drive.to_dict()})
+        if path == "/api/saved/delete":
+            target = os.path.abspath(str(body.get("path", "")))
+            if os.path.dirname(target) == os.path.abspath(tzscan.sessions_dir()) and target.endswith(tzscan.SUFFIX):
+                for p in (target, target + ".info"):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
             return self._json({"ok": True})
         if path == "/api/scan/stop":
             if app.job is not None:
@@ -341,7 +412,10 @@ class Handler(BaseHTTPRequestHandler):
             app.images = [d for d in app.images if d.id != drive.id] + [drive]
             return self._json({"drive": drive.to_dict()})
         if path == "/api/check-dest":
-            return self._json(self._dest_problem(str(body.get("dest", ""))))
+            dest = str(body.get("dest", ""))
+            result = self._dest_problem(dest)
+            result.update(_space(dest, int(body.get("need") or 0), result["error"]))
+            return self._json(result)
         if path == "/api/recover":
             if app.job is None:
                 return self._error("no scan")
@@ -355,6 +429,9 @@ class Handler(BaseHTTPRequestHandler):
             items = [it for it in (app.job.item(int(i)) for i in ids) if it is not None]
             if not items:
                 return self._error("nothing selected")
+            space = _space(dest, sum(it.candidate.size for it in items), "")
+            if space.get("error"):
+                return self._error(space["error"])
             app.run_recover(items, dest, bool(body.get("keep_folders", True)))
             return self._json({"ok": True})
         if path == "/api/recover/stop":

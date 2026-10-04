@@ -8,14 +8,15 @@
 
 ## What it does
 
-1. **Pick a drive.** USB sticks and memory cards are listed first, because that is where recovery works best.
-2. **Quick scan** reads the drive's own file table and finds deleted files with their **real names and folders**, usually in seconds.
-3. **Deep scan** also searches every free byte and recognises photos, videos, music, documents and archives **by their contents**, even after a format, when no name is left.
-4. **Preview before saving:** pictures, video, audio, PDFs, text and Office documents, plus a hex view of anything.
-5. Every file gets a status: **Good**, **Partial** (part of it was reused) or **Overwritten**, so you know what is worth saving.
-6. **Recover** the files you tick to a folder on *another* drive. TizoRecover never writes to the drive you are recovering from, and refuses to save onto it.
+1. **Pick a drive** (disks with their partitions; USB sticks and memory cards first, because that is where recovery works best) and press **Search for lost data**.
+2. **All recovery methods** (the default) first reads the drive's own file table, which finds deleted files with their **real names and folders** in seconds, then searches all free space and recognises photos, videos, music, documents and archives **by their contents**, even after a format. **Quick scan** does only the first part.
+3. Watch it work: progress, speed, time left and live counts per file type. You can **look through what has been found while it is still scanning**.
+4. **Stop any time and resume later.** Scans save themselves every minute; the drive list offers *Resume scan* (or *Open last results* for a finished scan). A long scan of a big hard drive no longer has to happen in one go.
+5. Review the results the way the drive had them (**Deleted or lost**, with folders) or by type (**Reconstructed**, found by content), with search, filters and a preview of pictures, video, audio, PDFs, text and Office documents, plus a hex view of anything.
+6. Every file shows its **recovery chances**: **High**, **Average** (part of it may have been reused) or **Low** (overwritten), so you know what is worth saving.
+7. **Recover** the files and folders you tick to a folder on *another* drive. TizoRecover never writes to the drive you are recovering from, refuses to save onto it, and checks the destination has room.
 
-It can also **erase a removable drive** (quick or full), behind a deliberately slow, typed confirmation.
+Under *Disk tools* it can also **erase a removable drive** (quick or full), behind a deliberately slow, typed confirmation.
 
 ## Download
 
