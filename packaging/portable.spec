@@ -1,5 +1,6 @@
 # PyInstaller spec: the single-file portable window (Windows), released as TizoRecover-<ver>-portable.exe.
-# Runs from anywhere, including another USB stick, without installing anything.
+# Runs from anywhere, including another USB stick, without installing anything. Always elevated
+# (requireAdministrator manifest).
 #
 #   python -m PyInstaller --noconfirm --clean packaging/portable.spec
 
@@ -22,6 +23,6 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-EXE(pyz, a.scripts, a.binaries, a.datas, [], name="TizoRecover-portable", console=False,
+EXE(pyz, a.scripts, a.binaries, a.datas, [], name="TizoRecover-portable", console=False, uac_admin=True,
     debug=False, bootloader_ignore_signals=False, strip=False, upx=False, runtime_tmpdir=None,
     icon=os.path.join(SPECPATH, "tizorecover.ico"), version=os.path.join(SPECPATH, "version_info.txt"))

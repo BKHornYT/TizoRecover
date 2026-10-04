@@ -26,7 +26,28 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 
 from tests.ui import demo_image  # noqa: E402
 from tizorecover.app.server import App, make_server  # noqa: E402
+from tizorecover.engine import fixdrive  # noqa: E402
 from tizorecover.engine.drives import image_drive  # noqa: E402
+
+# Fix Drive must not ask this PC's Windows anything in a test: a made-up diagnosis instead.
+FAKE_DIAG = {
+    "disks": [{"n": 7, "name": "WD Elements", "bus": "USB", "size": 2_000_000_000_000, "style": "RAW", "offline": False,
+               "readonly": False, "system": False, "parts": []}],
+    "usb": [{"id": r"USB\VID_04E8&PID_6300\X", "name": "Type-C", "speed": "usb2", "port": "HS06"}],
+    "problems": [], "net": [], "used": ["C"], "suspend": {"ac": 1, "dc": 1},
+    "failed": [{"id": r"USB\VID_0000&PID_0002\1", "name": "Unknown USB Device (Device Descriptor Request Failed)",
+                "at": "2026-10-04T21:15:18+00:00", "speed": "usb2", "port": "HS06", "present": False}],
+}
+fixdrive.diagnose = lambda: dict(FAKE_DIAG)
+fixdrive.snapshot = lambda: {}
+
+
+class _QuickWatch(fixdrive.Watch):
+    def __init__(self, seconds: int = 45) -> None:
+        super().__init__(10)
+
+
+fixdrive.Watch = _QuickWatch
 
 FAILS: list[str] = []
 
@@ -78,7 +99,14 @@ def main() -> int:
         page.click("#method-btn")
         page.click("#method-menu [data-mode=deep]")
         check("method label", page.inner_text("#method-label") == "All recovery methods")
+        page.click("#happened [data-hap=formatted]")
+        check("what happened: formatted explains lost partitions", "Find lost partitions" in page.inner_text("#hap-hint"))
+        check("what happened: picks all methods", page.inner_text("#method-label") == "All recovery methods")
         shot("1-devices")
+        page.click("#happened [data-hap=missing]")
+        check("what happened: drive missing opens Fix a drive", page.locator("#screen-fix").is_visible())
+        page.click(".nav-item[data-goto=devices]")
+        page.locator(".dev-row.part").first.click()
 
         print("scanning")
         page.click("#search-btn")
@@ -138,6 +166,37 @@ def main() -> int:
         page.wait_for_selector(".pv-hex")
         check("hex tab", "PNG" in page.inner_text(".pv-hex"))
         page.click("#pv-tabs [data-tab=preview]")
+
+        print("gallery")
+        page.click(".nav-item[data-goto=gallery]")
+        page.wait_for_selector(".gal-tile")
+        tiles = page.locator(".gal-tile").count()
+        check("gallery shows the pictures and videos", tiles >= 8, str(tiles))
+        check("gallery counts what it shows", "pictures and videos" in page.inner_text("#gal-count"),
+              page.inner_text("#gal-count"))
+        page.wait_for_function("[...document.querySelectorAll('.gal-tile img')].some((i) => i.naturalWidth > 0)",
+                               timeout=10000)
+        check("gallery thumbnails load", True)
+        page.click("#gal-kind [data-k=video]")
+        check("videos only", page.locator(".gal-tile").count() == 1, str(page.locator(".gal-tile").count()))
+        page.click("#gal-kind [data-k=media]")
+        page.locator(".gal-tile").first.click()
+        page.wait_for_selector("#ql[open]")
+        first_name = page.inner_text("#ql-name")
+        page.keyboard.press("ArrowRight")
+        page.wait_for_function(f"document.querySelector('#ql-name').textContent !== {first_name!r}")
+        check("gallery opens the big viewer, arrows step", True)
+        page.keyboard.press("Escape")
+        tile = page.locator(".gal-tile:not(.sel)").first
+        tile.hover()
+        tile.locator("[data-gpick]").click()
+        check("ticking in the gallery enables Recover", page.locator("#gal-recover").is_enabled())
+        shot("21-gallery")
+        picked = page.locator(".gal-tile.sel [data-gpick]").count()
+        page.locator(".gal-tile.sel").last.hover()
+        page.locator(".gal-tile.sel").last.locator("[data-gpick]").click()     # put the selection back
+        check("unticking works", page.locator(".gal-tile.sel").count() == picked - 1)
+        page.click(".nav-item[data-goto=review]")
 
         print("quick look")
         page.locator(".row.file", has_text="IMG_2042.png").locator("[data-eye]").click()
@@ -248,6 +307,16 @@ def main() -> int:
         check("new scan asks before replacing the save", "Replace" in page.inner_text("#cf-title"))
         page.click("#cf-no")
 
+        page.click(".nav-item[data-goto=saved]")
+        page.wait_for_selector(".saved-row")
+        check("saved scans listed", page.locator(".saved-row", has_text="demo.img").count() == 1)
+        check("saved scans say where", "TizoRecover" in page.inner_text("#saved-where"))
+        check("drive shown as plugged in", "Drive plugged in" in page.inner_text(".saved-row"))
+        shot("18-saved-scans")
+        page.click("[data-sv-open='0']")
+        page.wait_for_selector("#screen-scan:not([hidden]), #screen-review:not([hidden])", timeout=30000)
+        check("saved scan opens from the list", True)
+
         print("lost partitions")
         page.click(".nav-item[data-goto=devices]")
         page.wait_for_selector("[data-pfind]")
@@ -269,6 +338,23 @@ def main() -> int:
         page.wait_for_selector(".row.file")
         check("undo format: old file by name", page.locator(".row.file", has_text="before the format.png").count() == 1)
         shot("15-undo-format")
+
+        print("fix a drive")
+        page.click(".nav-item[data-goto=fix]")
+        page.wait_for_selector(".fix-item", timeout=30000)
+        titles = page.inner_text("#fix-list")
+        check("failed connection reported", "failed to connect" in titles)
+        check("disk without partitions reported", "has no partitions" in titles)
+        check("power saving reported", "USB power saving is on" in titles)
+        check("first card is the serious one", "bad" in (page.locator(".fix-item").first.get_attribute("class") or ""))
+        check("no-partition card offers a scan, not a fix",
+              page.locator(".fix-item", has_text="has no partitions").locator("[data-fscan]").count() == 1
+              and page.locator(".fix-item", has_text="has no partitions").locator("[data-fix]").count() == 0)
+        shot("19-fix-drive")
+        page.click("#fw-start")
+        page.wait_for_selector("#fw-live .fix-item", timeout=40000)
+        check("watch verdict shown", "saw nothing" in page.inner_text("#fw-live"))
+        shot("20-fix-watch")
 
         print("tools + theme")
         page.click(".nav-item[data-goto=tools]")

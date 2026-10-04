@@ -125,6 +125,20 @@ def _windows_drives() -> list[Drive]:
             partition=p["num"], disk_size=int(disk.get("size") or 0),
             disk_offset=int(p.get("offset") or 0),
         ))
+    # A disk with nothing usable in its table -- never set up, or its partition table is gone -- is the
+    # classic "my drive doesn't show up": list the whole disk so it can be scanned or searched.
+    listed = {d.disk for d in drives}
+    for n, disk in disks.items():
+        size = int(disk.get("size") or 0)
+        if n in listed or size < MIN_PARTITION:
+            continue
+        bus = disk.get("bus", "")
+        drives.append(Drive(
+            id=f"d{n}", kind="disk", path=f"\\\\.\\PhysicalDrive{n}", offset=0, size=size, label="",
+            letter="", filesystem="unknown", free=0, disk=n, disk_name=disk.get("name", ""), bus=bus,
+            media=media.get(str(n), ""), removable=bus in ("USB", "SD", "MMC"),
+            system=bool(disk.get("system") or disk.get("boot")), disk_size=size,
+        ))
     drives.sort(key=lambda d: (not d.removable, d.system, d.disk, d.partition))
     return drives
 

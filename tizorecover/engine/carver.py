@@ -19,7 +19,7 @@ import re
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Iterable, Iterator
 
-from tizorecover.engine.blockdev import DEFAULT_CHUNK
+from tizorecover.engine.blockdev import DEFAULT_CHUNK, DriveGoneError
 from tizorecover.engine.formats import BY_MAGIC, FORMATS, MAX_MAGIC, Format, Extent
 from tizorecover.engine.results import FileCandidate, Strategy, Verdict
 
@@ -272,6 +272,8 @@ def carve_range(
                         continue
                     try:
                         extent = resolver(walk_src, offset, end)
+                    except DriveGoneError:
+                        raise
                     except Exception:
                         continue
                     if extent is None or extent.size < min_size:
@@ -372,6 +374,8 @@ def _find_header_backwards(
                 continue
             try:
                 extent = fmt.resolve(src, offset, end)
+            except DriveGoneError:
+                raise
             except Exception:
                 continue
             if extent is None or extent.size < min_size:

@@ -10,6 +10,7 @@ stays open afterwards so files can be previewed and saved.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -20,7 +21,7 @@ from tizorecover.engine import allocation as alloc_mod
 from tizorecover.engine import tzscan
 from tizorecover.engine import verify
 from tizorecover.engine.access import CandidateData, pieces_of
-from tizorecover.engine.blockdev import (BlockReader, DeviceBlockReader, VolumeAccessError,
+from tizorecover.engine.blockdev import (BlockReader, DeviceBlockReader, DriveGoneError, VolumeAccessError,
                                          WindowBlockReader, open_source)
 from tizorecover.engine.carver import carve_range
 from tizorecover.engine.drives import Drive
@@ -154,6 +155,7 @@ class ScanJob:
         self.problems: list[str] = []
         self.free_bytes = 0
         self.reader: BlockReader | None = None
+        self.drive_gone = False
         self.src: LockedSource | None = None
         self.allocation = None
         self._stop = threading.Event()
@@ -198,7 +200,17 @@ class ScanJob:
                 "drive": self.drive.to_dict(), "found": total, "counts": counts,
                 "progress": self.progress.to_dict(), "problems": list(self.problems),
                 "free_bytes": self.free_bytes, "autosave": bool(self.autosave),
-                "resumed_from": self.resumed_from}
+                "resumed_from": self.resumed_from, "bad_bytes": self.bad_bytes(),
+                "drive_gone": self.drive_gone}
+
+    def bad_bytes(self) -> int:
+        """Bytes the drive could not read (bad sectors), skipped and read as blank."""
+        r = self.reader
+        for _ in range(6):
+            if r is None or hasattr(r, "bad_bytes"):
+                break
+            r = getattr(r, "parent", None)
+        return int(getattr(r, "bad_bytes", 0) or 0)
 
     def save(self, path: str | None = None) -> str | None:
         """Write this scan to ``path`` (default: its automatic save file)."""
@@ -339,11 +351,23 @@ class ScanJob:
         except VolumeAccessError as exc:
             self.problems.append(str(exc))
             self.state = "failed"
+        except DriveGoneError as exc:
+            logging.getLogger("tizorecover").warning("drive gone during scan of %s: %s", self.drive.path, exc)
+            self.drive_gone = True
+            self.problems.append("The drive disconnected during the scan. Everything found so far is kept and "
+                                 "saved: plug it back in (same port), then choose Resume.")
+            self.state = "failed"
         except Exception as exc:  # the UI must hear about it, whatever it is
+            logging.getLogger("tizorecover").exception("scan of %s failed", self.drive.path)
             self.problems.append(f"scan failed: {exc!r}")
             self.state = "failed"
-        if self.autosave and self.items and self.state in ("done", "stopped"):
+        if self.autosave and self.items and (self.state in ("done", "stopped") or self.drive_gone):
             self.save()
+        bad = self.bad_bytes()
+        if bad:
+            self.problems.append(f"{bad // 1024:,} KB of the drive could not be read (bad sectors) and was skipped. "
+                                 f"Files that lie there may be damaged; the drive may be failing, so copy what you "
+                                 f"need off it soon.")
         self.progress.stage = self.state
 
     def _quick(self) -> None:

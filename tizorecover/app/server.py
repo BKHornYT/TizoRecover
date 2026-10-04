@@ -32,9 +32,12 @@ from tizorecover.engine.erase import EraseError, EraseJob, Planner
 from tizorecover.engine import formats as formats_mod
 from tizorecover.engine import partitions as parts_mod
 from tizorecover.engine import tzscan
+from tizorecover.engine import fixdrive
+from tizorecover.engine.eject import EjectError, eject as eject_disk
 from tizorecover.engine.blockdev import VolumeAccessError, open_source
 from tizorecover.engine.session import DEEP, QUICK, ScanJob
 from tizorecover.engine.writer import save_items
+from tizorecover.app import crashlog
 from tizorecover.app.update import Updater
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -59,6 +62,9 @@ OFFICE_TEXT = {"docx": "word/document.xml", "pptx": "ppt/slides/", "xlsx": "xl/s
 CHANCES = {"good": "High", "partial": "Average", "overwritten": "Low"}
 TEXT_LIMIT = 256 << 10
 PREVIEW_SCAN = 48 << 20
+THUMB_SCAN = 1 << 20            # RAW/HEIC: their small previews sit near the start
+THUMB_SCAN_JPEG = 160 << 10     # a JPEG's EXIF thumbnail is inside its first 64 KB
+THUMB_CACHE = 96 << 20
 
 
 class _BytesSource:
@@ -94,6 +100,10 @@ class App:
         self.parts_stop = threading.Event()
         self.last_ping = time.time()
         self.lock = threading.Lock()
+        self.diag: dict = {"state": "idle"}        # Fix Drive: the last diagnosis + its findings
+        self.thumbs: dict = {}                     # (scan serial, item) -> small JPEG, newest last
+        self.thumb_bytes = 0
+        self.watch: fixdrive.Watch | None = None
 
     def all_drives(self, refresh: bool = False) -> list[drives_mod.Drive]:
         with self.lock:
@@ -194,6 +204,66 @@ class App:
 
         threading.Thread(target=work, name="tizo-parts", daemon=True).start()
         return None
+
+    def remember_thumb(self, key, body: bytes) -> None:
+        with self.lock:
+            if key in self.thumbs:
+                return
+            self.thumbs[key] = body
+            self.thumb_bytes += len(body)
+            while self.thumb_bytes > THUMB_CACHE and self.thumbs:
+                old = next(iter(self.thumbs))
+                self.thumb_bytes -= len(self.thumbs.pop(old))
+
+    def run_diagnose(self) -> None:
+        if self.diag.get("state") == "running":
+            return
+        self.diag = {"state": "running", "started": time.time()}
+
+        def work():
+            try:
+                data = fixdrive.diagnose()
+                self.diag = {"state": "done", "data": data, "findings": fixdrive.findings(data), "at": time.time()}
+            except Exception as exc:  # noqa: BLE001 - shown on the page
+                crashlog.error("fix drive: diagnose", exc)
+                self.diag = {"state": "failed", "error": f"Could not ask Windows about the drives: {exc}"}
+        threading.Thread(target=work, name="tizo-diagnose", daemon=True).start()
+
+    def eject(self, disk: int, force_scan: bool) -> str:
+        """Eject a removable disk after letting go of our own handles to it."""
+        drive = next((d for d in self.all_drives() if d.disk == disk and d.kind != "image" and not d.lost), None)
+        if drive is None:
+            raise EjectError("That drive is not there any more. It may already be unplugged.")
+        if not drive.removable:
+            raise EjectError("Only USB drives and memory cards can be ejected here.")
+        if self.recover.get("state") == "running":
+            dest_disk = drives_mod.disk_of_path(self.recover.get("dest", ""), self.all_drives())
+            if dest_disk == disk or (self.job is not None and self.job.drive.disk == disk):
+                raise EjectError("Files are being recovered from or to this drive. Wait until that is done.")
+        if self.parts.get("state") == "running" and str(self.parts.get("target")) == str(disk):
+            raise EjectError("A lost-partition search is running on this drive. Stop it first.")
+        if self.erase is not None and getattr(self.erase, "state", "") == "running":
+            raise EjectError("An erase is running. Wait until it is done.")
+        if self.job is not None and self.job.drive.disk == disk and self.job.drive.kind != "image":
+            if self.job.state in ("running", "starting") and not force_scan:
+                raise EjectError("This drive is being scanned. Stop the scan first.")
+            self.job.close()      # stops a running scan (progress is saved) and releases the drive
+        if sys.platform == "win32":
+            return eject_disk(disk)
+        return eject_disk(f"/dev/{drive.disk_name}")
+
+    def suggest_dest(self) -> str:
+        """Where recovered files go by default: Desktop\\TizoRecover <date>, never on the scanned disk."""
+        stamp = time.strftime("%Y-%m-%d")
+        source = self.job.drive.disk if self.job is not None and self.job.drive.kind != "image" else None
+        desktop = _desktop_dir()
+        if desktop and drives_mod.disk_of_path(desktop, self.all_drives()) != source:
+            return os.path.join(desktop, f"TizoRecover {stamp}")
+        others = [d for d in self.all_drives() if d.letter and d.disk != source and d.kind == "volume" and d.free > 0]
+        if others:
+            best = max(others, key=lambda d: d.free)
+            return f"{best.letter}:\\TizoRecover {stamp}"
+        return ""
 
     def saved_scans(self) -> list[dict]:
         """Saved scans, each tied to a drive that is plugged in now (or ``drive_id`` None)."""
@@ -348,6 +418,14 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, message: str, status: int = 400) -> None:
         self._json({"error": message}, status)
 
+    def _crashed(self, where: str, exc: Exception) -> None:
+        crashlog.error(f"request {where}", exc)
+        try:
+            self._json({"error": f"Something went wrong ({type(exc).__name__}: {exc}). "
+                                 f"It is written to the log.", "crash": True}, 500)
+        except (OSError, ValueError):
+            pass   # headers were already sent; the log has it
+
     def _authorised(self, query: dict) -> bool:
         token = self.headers.get("X-Tizo-Token") or (query.get("t") or [""])[0]
         return secrets.compare_digest(token, self.app.token)
@@ -373,6 +451,15 @@ class Handler(BaseHTTPRequestHandler):
             self._get(url.path, query)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        except OSError as exc:   # the drive went away or a read failed: a message, not a crash report
+            crashlog.log.warning("request %s: %s", url.path, exc)
+            try:
+                self._error("Could not read from the drive. If it was unplugged or ejected, plug it back in "
+                            "and open its saved scan.", 409)
+            except OSError:
+                pass
+        except Exception as exc:  # never a dead button: log it and tell the page
+            self._crashed(url.path, exc)
 
     def do_POST(self) -> None:
         url = urlparse(self.path)
@@ -386,6 +473,15 @@ class Handler(BaseHTTPRequestHandler):
             self._post(url.path, self._body())
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        except OSError as exc:   # the drive went away or a read failed: a message, not a crash report
+            crashlog.log.warning("request %s: %s", url.path, exc)
+            try:
+                self._error("Could not read from the drive. If it was unplugged or ejected, plug it back in "
+                            "and open its saved scan.", 409)
+            except OSError:
+                pass
+        except Exception as exc:  # never a dead button: log it and tell the page
+            self._crashed(url.path, exc)
 
     def _static(self, path: str) -> None:
         if path in ("", "/"):
@@ -418,6 +514,18 @@ class Handler(BaseHTTPRequestHandler):
                                "admin": drives_mod.is_admin(), "platform": sys.platform})
         if path == "/api/ping":
             return self._json({"ok": True})
+        if path == "/api/fix":
+            d = dict(app.diag)
+            d.pop("data", None)
+            return self._json(d)
+        if path == "/api/fix/watch":
+            return self._json(app.watch.status() if app.watch else {"state": "idle"})
+        if path == "/api/suggest-dest":
+            return self._json({"dest": app.suggest_dest()})
+        if path == "/api/drive-mask":
+            return self._json({"mask": _drive_mask()})
+        if path == "/api/log":
+            return self._json({"path": crashlog.path() or "", "text": crashlog.tail()})
         if path == "/api/drives":
             ds = app.all_drives(refresh=q("refresh") == "1")
             return self._json({"drives": [d.to_dict() for d in ds]})
@@ -435,7 +543,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/recover":
             return self._json(app.recover)
         if path == "/api/saved":
-            return self._json({"saved": app.saved_scans()})
+            return self._json({"saved": app.saved_scans(), "dir": tzscan.sessions_dir()})
         if path == "/api/partitions":
             return self._json(app.parts)
         if path == "/api/update":
@@ -444,7 +552,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(app.updater.state)
         if path == "/api/erase":
             return self._json(app.erase.status() if app.erase else {"state": "idle"})
-        m = re.fullmatch(r"/api/item/(\d+)(?:/(data|hex|text|preview))?", path)
+        m = re.fullmatch(r"/api/item/(\d+)(?:/(data|hex|text|preview|thumb))?", path)
         if m:
             if app.job is None:
                 return self._error("no scan", 404)
@@ -458,6 +566,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._data(item, q("download") == "1")
             if what == "preview":
                 return self._preview(item)
+            if what == "thumb":
+                return self._thumb(item)
             if what == "hex":
                 return self._hex(item, int(q("offset", "0")), min(int(q("length", "4096")), 65536))
             return self._text(item)
@@ -465,6 +575,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post(self, path: str, body: dict) -> None:
         app = self.app
+        if path == "/api/fix/check":
+            app.run_diagnose()
+            return self._json({"ok": True})
+        if path == "/api/fix/apply":
+            data = (app.diag or {}).get("data")
+            if not data:
+                return self._error("Check the drives first.")
+            wanted = str(body.get("id", ""))
+            finding = next((f for f in app.diag.get("findings", []) if f["id"] == wanted and f.get("fix")), None)
+            if finding is None:
+                return self._error("That problem is gone. Check again.")
+            try:
+                message = fixdrive.apply(finding["fix"], data)
+            except fixdrive.FixError as exc:
+                return self._error(str(exc))
+            crashlog.log.info("fix drive: %s -> %s", finding["fix"].get("action"), message)
+            app.run_diagnose()
+            return self._json({"ok": True, "message": message})
+        if path == "/api/fix/watch":
+            if body.get("stop"):
+                if app.watch:
+                    app.watch.stop()
+                return self._json({"ok": True})
+            if app.watch and app.watch.state == "watching":
+                return self._error("Already watching.")
+            app.watch = fixdrive.Watch(int(body.get("seconds", 45))).start()
+            return self._json({"ok": True})
+        if path == "/api/eject":
+            try:
+                message = app.eject(int(body.get("disk", -1)), bool(body.get("force_scan")))
+            except (EjectError, ValueError) as exc:
+                return self._error(str(exc))
+            with app.lock:
+                app.drives_at = 0.0
+            return self._json({"ok": True, "message": message})
+        if path == "/api/client-error":
+            crashlog.log.error("page: %s", str(body.get("message", ""))[:4000])
+            return self._json({"ok": True})
         if path == "/api/scan":
             drive = app.find_drive(str(body.get("drive", "")))
             if drive is None:
@@ -653,6 +801,33 @@ class Handler(BaseHTTPRequestHandler):
         for block in data.chunks(1 << 20, start, end + 1):
             self.wfile.write(block)
 
+    @staticmethod
+    def _embedded_jpegs(blob: bytes, min_size: int = 2048) -> list[tuple[int, int]]:
+        """Every intact JPEG inside ``blob``, as (offset, size)."""
+        found = []
+        view = _BytesSource(blob)
+        pos = blob.find(b"\xff\xd8\xff")
+        tries = 0
+        while pos >= 0 and tries < 64:
+            tries += 1
+            extent = formats_mod._jpeg_walk(view, pos, len(blob))
+            if extent is not None and extent.verdict.value == "valid" and extent.size > min_size:
+                found.append((pos, extent.size))
+                if pos > 0:
+                    pos = blob.find(b"\xff\xd8\xff", pos + extent.size)
+                    continue
+            pos = blob.find(b"\xff\xd8\xff", pos + 3)
+        return found
+
+    def _send_jpeg(self, body: bytes) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, max-age=900")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _preview(self, item) -> None:
         """The largest intact JPEG inside a file the window cannot show itself.
 
@@ -661,29 +836,38 @@ class Handler(BaseHTTPRequestHandler):
         """
         data = self.app.job.data(item)
         blob = data.at(0, min(data.size, PREVIEW_SCAN))
-        best = None
-        view = _BytesSource(blob)
-        pos = blob.find(b"\xff\xd8\xff")
-        tries = 0
-        while pos >= 0 and tries < 64:
-            tries += 1
-            extent = formats_mod._jpeg_walk(view, pos, len(blob))
-            if extent is not None and extent.verdict.value == "valid" and extent.size > 2048:
-                if best is None or extent.size > best[1]:
-                    best = (pos, extent.size)
-                pos = blob.find(b"\xff\xd8\xff", pos + extent.size)
-            else:
-                pos = blob.find(b"\xff\xd8\xff", pos + 3)
+        found = self._embedded_jpegs(blob)
+        best = max(found, key=lambda f: f[1]) if found else None
         if best is None or (best[0] == 0 and item.candidate.ext.lower() in ("jpg", "jpeg")):
             return self._error("no embedded preview", 404)
-        body = blob[best[0]:best[0] + best[1]]
-        self.send_response(200)
-        self.send_header("Content-Type", "image/jpeg")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "private, max-age=900")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_jpeg(blob[best[0]:best[0] + best[1]])
+
+    def _thumb(self, item) -> None:
+        """A small picture for the gallery and the grid, cheap to read from a slow drive.
+
+        Cameras store a ~160 px thumbnail in a photo's EXIF block (and RAW/HEIC files carry
+        several previews): that is a few KB from the start of the file instead of the whole
+        5-25 MB picture. Without one, the full image is sent (the browser scales it).
+        Kept in memory, so scrolling back is instant.
+        """
+        app = self.app
+        key = (app.job_serial, item.id)
+        cached = app.thumbs.get(key)
+        if cached is not None:
+            return self._send_jpeg(cached)
+        data = app.job.data(item)
+        ext = item.candidate.ext.lower()
+        head = data.at(0, min(data.size, THUMB_SCAN_JPEG if ext in ("jpg", "jpeg") else THUMB_SCAN))
+        inner = [f for f in self._embedded_jpegs(head, 1024) if f[0] > 0]
+        if inner:
+            pos, size = min(inner, key=lambda f: f[1]) if ext in ("jpg", "jpeg") else \
+                min((f for f in inner if f[1] >= 8192), key=lambda f: f[1], default=min(inner, key=lambda f: f[1]))
+            body = head[pos:pos + size]
+            app.remember_thumb(key, body)
+            return self._send_jpeg(body)
+        if ext in ("jpg", "jpeg", "png", "gif", "bmp", "webp", "ico", "svg", "avif") and data.size <= 40_000_000:
+            return self._data(item, False)
+        return self._preview(item)
 
     def _hex(self, item, offset: int, length: int) -> None:
         data = self.app.job.data(item)
@@ -729,6 +913,28 @@ def relaunch_as_admin() -> bool:
         threading.Timer(0.5, lambda: os._exit(0)).start()
         return True
     return False
+
+
+def _desktop_dir() -> str:
+    """The real Desktop folder (OneDrive moves it), "" when there is none."""
+    if sys.platform == "win32":
+        import ctypes
+        buf = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf) == 0 and os.path.isdir(buf.value):
+            return buf.value
+    path = os.path.join(os.path.expanduser("~"), "Desktop")
+    return path if os.path.isdir(path) else ""
+
+
+def _drive_mask() -> int:
+    """Which drive letters exist: cheap enough to poll, so a plugged-in stick shows up by itself."""
+    if sys.platform == "win32":
+        import ctypes
+        return int(ctypes.windll.kernel32.GetLogicalDrives())
+    try:
+        return hash(tuple(sorted(os.listdir("/sys/block"))))
+    except OSError:
+        return 0
 
 
 def make_server(app: App, port: int = 0) -> ThreadingHTTPServer:

@@ -4,8 +4,9 @@
 # into the AppImage. Two programs share one set of libraries:
 #   TizoRecover(.exe)      the window, no console behind it (Windows)
 #   TizoRecover-cli(.exe)  the command line (tizorecover drives / scan E:)
-# Neither asks for administrator rights up front: removable drives read without them, and the
-# window offers to restart elevated for internal drives.
+# The window carries a requireAdministrator manifest, so Windows asks every start (owner, 2026-10-05:
+# no way to open it without admin). The CLI does not: an elevated console exe would open a second
+# console; it says so instead when it lacks the rights.
 #
 #   python -m PyInstaller --noconfirm --clean packaging/tizorecover.spec
 
@@ -37,7 +38,7 @@ pyz = PYZ(a.pure)
 common = dict(exclude_binaries=True, debug=False, bootloader_ignore_signals=False, strip=False,
               upx=False, icon=ICON, version=VERSION)
 
-gui = EXE(pyz, a.scripts, [], name="TizoRecover", console=not WINDOWS, **common)
+gui = EXE(pyz, a.scripts, [], name="TizoRecover", console=not WINDOWS, uac_admin=WINDOWS, **common)
 cli = EXE(pyz, a.scripts, [], name="TizoRecover-cli", console=True, **common)
 
 COLLECT(gui, cli, a.binaries, a.datas, strip=False, upx=False, name="TizoRecover")

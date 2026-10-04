@@ -45,6 +45,9 @@ const P = {
   shrink: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   alert: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+  plug: '<path d="M9 2v5M15 2v5M7 7h10v4a5 5 0 0 1-10 0zM12 16v6"/>',
+  eject: '<path d="M5 17h14v2H5zM12 5l7 9H5z"/>',
   history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/>',
 };
 const icon = (name, cls = "") =>
@@ -63,12 +66,14 @@ async function api(path, body) {
   }
   const r = await fetch(path, opts);
   const data = await r.json().catch(() => ({}));
+  if (data.crash) showError(data.error);
   if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
   return data;
 }
 // The scan number makes every scan's item URLs distinct, so the browser may cache them.
 const scanGen = () => (S.scan && S.scan.job) || 0;
 const dataUrl = (id, extra = "") => `/api/item/${id}/data?t=${encodeURIComponent(TOKEN)}&g=${scanGen()}${extra}`;
+const thumbUrl = (id) => `/api/item/${id}/thumb?t=${encodeURIComponent(TOKEN)}&g=${scanGen()}`;
 const previewUrl = (id) => `/api/item/${id}/preview?t=${encodeURIComponent(TOKEN)}&g=${scanGen()}`;
 const THUMB_MAX = 12e6;
 function thumbFor(it, cls) {
@@ -112,6 +117,41 @@ function toast(text) {
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 3600);
 }
+/* ---------- errors: never silent ---------- */
+let errAt = 0;
+function reportError(text) {
+  text = String(text || "unknown error").slice(0, 4000);
+  fetch("/api/client-error", {
+    method: "POST", body: JSON.stringify({ message: text }),
+    headers: { "X-Tizo-Token": TOKEN, "Content-Type": "application/json" },
+  }).catch(() => {});
+  showError(text);
+}
+function showError(text) {
+  const d = $("#error-dialog");
+  if (!d || d.open || Date.now() - errAt < 10000) return;   // one panel, not a storm
+  errAt = Date.now();
+  $("#er-text").textContent = text;
+  $("#er-close").onclick = () => d.close();
+  $("#er-copy").onclick = async () => {
+    const log = await api("/api/log").catch(() => ({ text: "", path: "" }));
+    const report = `TizoRecover ${(S.env && S.env.version) || "?"} (${(S.env && S.env.platform) || "?"})\n\n` +
+      `${text}\n\nLog (${log.path}):\n${log.text}`;
+    try { await navigator.clipboard.writeText(report); toast("Report copied"); }
+    catch { toast(`Could not copy. The log is at ${log.path}`); }
+  };
+  d.showModal();
+}
+window.addEventListener("error", (e) => {
+  if (!e.error && !e.message) return;          // a broken <img>/<video> fires this too: not an app error
+  reportError(`${e.message} (${e.filename}:${e.lineno}:${e.colno})\n${(e.error && e.error.stack) || ""}`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e.reason;
+  if (r && /Failed to fetch|NetworkError/.test(String(r.message || r))) return toast("Lost contact with the engine for a moment.");
+  reportError(`Unhandled: ${(r && r.stack) || r}`);
+});
+
 function ask(title, text, ok = "OK") {
   const d = $("#confirm-dialog");
   $("#cf-title").textContent = title;
@@ -189,12 +229,15 @@ function go(screen) {
   if (screen === "review" && !S.scan) screen = "devices";
   if (screen === "scan" && !S.scan) screen = "devices";
   S.screen = screen;
-  for (const s of ["devices", "scan", "review", "tools"]) $(`#screen-${s}`).hidden = s !== screen;
+  if (screen === "gallery" && !S.scan) screen = "devices";
+  for (const s of ["devices", "scan", "review", "gallery", "saved", "fix", "tools"]) $(`#screen-${s}`).hidden = s !== screen;
   $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.goto === screen));
-  $("#admin-banner").hidden = !(screen === "devices" && S.env.platform === "win32" && !S.env.admin);
   if (screen === "review") { refilter(); requestAnimationFrame(renderList); }
   if (screen === "scan") renderScan();
   if (screen === "tools") renderTools();
+  if (screen === "saved") { renderSaved(); loadSaved(false); }
+  if (screen === "fix") enterFix();
+  if (screen === "gallery") { galleryFilter(); requestAnimationFrame(renderGallery); }
   if (screen === "devices" && S.drives.length) loadSaved(true);
 }
 $$(".nav-item").forEach((b) => { b.onclick = () => go(b.dataset.goto); });
@@ -205,8 +248,8 @@ async function init() {
   try {
     S.env = await api("/api/env");
     $("#ver").textContent = `Version ${S.env.version}`;
-    $("#admin-chip").innerHTML = S.env.admin
-      ? `<span class="chip ok">${icon("shield")}Administrator</span>`
+    // Always elevated in normal use; the chip only shows on a development run that skipped it.
+    $("#admin-chip").innerHTML = S.env.admin ? ""
       : `<button class="chip warn" id="admin-chip-btn" title="Restart as administrator">${icon("shield")}Not administrator</button>`;
     $("#admin-chip-btn")?.addEventListener("click", elevate);
   } catch (e) {
@@ -260,7 +303,6 @@ async function elevate() {
     else toast("Windows did not allow it. Right-click TizoRecover and choose Run as administrator.");
   } catch (e) { toast(e.message); }
 }
-$("#elevate").onclick = elevate;
 
 /* ---------- devices ---------- */
 async function loadDrives(refresh) {
@@ -282,9 +324,206 @@ async function loadDrives(refresh) {
 }
 
 async function loadSaved(render = true) {
-  try { S.saved = (await api("/api/saved")).saved || []; } catch { S.saved = []; }
+  try {
+    const r = await api("/api/saved");
+    S.saved = r.saved || [];
+    S.savedDir = r.dir || "";
+  } catch { S.saved = []; }
+  const pill = $("#nav-saved-pill");
+  pill.hidden = !S.saved.length;
+  pill.textContent = S.saved.length;
   if (render) renderDevices();
+  if (S.screen === "saved") renderSaved();
 }
+
+/* ---------- gallery ---------- */
+// Every picture and video found, big, in one place: the quickest way to see what can come back.
+const GAL = { items: [], kind: "media", sort: "date", low: false, zoom: 190, seen: -1, live: new Map() };
+try {
+  GAL.zoom = Number(localStorage.getItem("tizo-gal-zoom")) || 190;
+  GAL.sort = localStorage.getItem("tizo-gal-sort") || "date";
+} catch {}
+const galView = $("#gal-viewport");
+const galSpacer = $("#gal-spacer");
+function galleryFilter() {
+  const want = GAL.kind === "media" ? null : GAL.kind;
+  const list = S.items.filter((it) => (it.category === "image" || it.category === "video")
+    && (!want || it.category === want) && (GAL.low || it.status !== "overwritten"));
+  const by = {
+    date: (a, b) => (b.modified || 0) - (a.modified || 0) || b.size - a.size,
+    size: (a, b) => b.size - a.size,
+    name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }),
+  }[GAL.sort];
+  list.sort(by);
+  GAL.items = list;
+  GAL.seen = S.items.reduce((n, it) => n + (it.category === "image" || it.category === "video" ? 1 : 0), 0);
+  const hidden = S.items.filter((it) => (it.category === "image" || it.category === "video") && it.status === "overwritten").length;
+  $("#gal-count").textContent = `${plural(list.length, "picture or video", "pictures and videos")}${!GAL.low && hidden ? ` · ${nf(hidden)} with low chances hidden` : ""}`;
+  galView.scrollTop = Math.min(galView.scrollTop, Math.max(0, galSpacer.scrollHeight));
+}
+function galGeometry() {
+  const w = galView.clientWidth - 32;
+  const cols = Math.max(1, Math.floor((w + 12) / (GAL.zoom + 12)));
+  const tileW = (w - (cols - 1) * 12) / cols;
+  return { cols, tileW, rowH: tileW + 12 };
+}
+function galThumb(it) {
+  if (it.category === "video") {
+    return PLAYABLE_VIDEO.has(it.ext) && it.status !== "overwritten" && it.size < 4e9
+      ? `<video muted preload="metadata" src="${dataUrl(it.id)}#t=1"></video><span class="tile-badge">${icon("video")}</span>`
+      : `<span class="gal-ph">${icon("video")}<small>${esc((it.ext || "").toUpperCase())}</small></span>`;
+  }
+  if (it.status === "overwritten" && !GAL.low) return `<span class="gal-ph">${icon("image")}</span>`;
+  return `<img loading="lazy" decoding="async" src="${thumbUrl(it.id)}" alt="">`;
+}
+let galQueued = false;
+function queueGallery() {
+  if (galQueued) return;
+  galQueued = true;
+  requestAnimationFrame(() => { galQueued = false; renderGallery(); });
+}
+galView.addEventListener("scroll", queueGallery, { passive: true });
+new ResizeObserver(queueGallery).observe(galView);
+function renderGallery() {
+  if (S.screen !== "gallery") return;
+  const items = GAL.items;
+  const { cols, tileW, rowH } = galGeometry();
+  const rows = Math.ceil(items.length / cols);
+  galSpacer.style.height = `${rows * rowH + 16}px`;
+  if (!items.length) {
+    for (const el of GAL.live.values()) el.remove();
+    GAL.live.clear();
+    galSpacer.innerHTML = `<div class="dev-empty">${icon("image")}<span>${S.items.length ? "No pictures or videos among the files found." : "Nothing found yet."}</span></div>`;
+    return;
+  }
+  galSpacer.querySelector(".dev-empty")?.remove();
+  const top = galView.scrollTop;
+  const first = Math.max(0, Math.floor(top / rowH) - 2) * cols;
+  const last = Math.min(items.length, (Math.ceil((top + galView.clientHeight) / rowH) + 2) * cols);
+  const w = Math.round(tileW);
+  const want = new Set();
+  for (let i = first; i < last; i++) {
+    const it = items[i];
+    const sel = S.selected.has(it.id) ? 1 : 0;
+    const key = `${i}|${it.id}|${sel}|${w}|${cols}|${scanGen()}|${GAL.low ? 1 : 0}`;
+    want.add(key);
+    if (GAL.live.has(key)) continue;
+    const x = 16 + (i % cols) * (tileW + 12);
+    const y = 16 + Math.floor(i / cols) * rowH;
+    tpl.innerHTML = `<div class="gal-tile ${sel ? "sel" : ""} ${it.status}" data-gi="${i}" style="left:${x}px;top:${y}px;width:${w}px;height:${w}px">
+      ${galThumb(it)}
+      <input type="checkbox" class="check" data-gpick="${it.id}" ${sel ? "checked" : ""}>
+      <div class="gal-cap"><span class="sdot ${it.status}" title="${CHANCE[it.status].label} chances"></span><span class="nm">${esc(it.name)}</span><span class="sz">${size(it.size)}</span></div></div>`;
+    const el = tpl.content.firstElementChild;
+    galSpacer.appendChild(el);
+    GAL.live.set(key, el);
+  }
+  for (const [key, el] of GAL.live) if (!want.has(key)) { el.remove(); GAL.live.delete(key); }
+}
+galSpacer.addEventListener("error", (ev) => {
+  if (ev.target.tagName === "IMG") ev.target.outerHTML = `<span class="gal-ph">${icon("image")}<small>No preview</small></span>`;
+}, true);
+galSpacer.addEventListener("click", (ev) => {
+  const box = ev.target.closest("[data-gpick]");
+  if (box) {
+    const id = Number(box.dataset.gpick);
+    box.checked ? S.selected.add(id) : S.selected.delete(id);
+    afterSelection();
+    renderGallery();
+    return;
+  }
+  const tile = ev.target.closest("[data-gi]");
+  if (tile) openQuickLook(GAL.items[Number(tile.dataset.gi)], GAL.items);
+});
+function renderGallerySelection() {
+  if (!$("#gal-sel")) return;
+  const items = selectedItems();
+  const bytes = items.reduce((a, it) => a + it.size, 0);
+  $("#gal-sel").innerHTML = items.length ? `<b>${plural(items.length, "file")}</b> selected · ${size(bytes)}`
+    : `Tick what you want back <span class="hint">Click a picture to see it big, then use ← →</span>`;
+  $("#gal-recover").disabled = !items.length;
+  $("#gal-recover").lastChild.textContent = items.length ? `Recover ${plural(items.length, "file")}` : "Recover";
+}
+$$("#gal-kind button").forEach((b) => {
+  b.onclick = () => {
+    GAL.kind = b.dataset.k;
+    $$("#gal-kind button").forEach((x) => x.classList.toggle("active", x === b));
+    galView.scrollTop = 0;
+    galleryFilter();
+    renderGallery();
+  };
+});
+$("#gal-low").onchange = (e) => { GAL.low = e.target.checked; galleryFilter(); renderGallery(); };
+$("#gal-sort").value = GAL.sort;
+$("#gal-sort").onchange = (e) => {
+  GAL.sort = e.target.value;
+  try { localStorage.setItem("tizo-gal-sort", GAL.sort); } catch {}
+  galView.scrollTop = 0;
+  galleryFilter();
+  renderGallery();
+};
+$("#gal-zoom").value = GAL.zoom;
+$("#gal-zoom").oninput = (e) => {
+  GAL.zoom = Number(e.target.value);
+  try { localStorage.setItem("tizo-gal-zoom", String(GAL.zoom)); } catch {}
+  queueGallery();
+};
+$("#gal-all").onclick = () => { for (const it of GAL.items) S.selected.add(it.id); afterSelection(); renderGallery(); };
+$("#gal-none").onclick = () => { S.selected.clear(); afterSelection(); renderGallery(); };
+$("#gal-recover").onclick = () => openRecover(selectedItems());
+
+/* ---------- saved scans ---------- */
+function savedDriveName(dv) {
+  if (!dv) return "Unknown drive";
+  if (dv.kind === "image") return dv.label || "Disk image";
+  const name = dv.label || dv.disk_name || "Drive";
+  return dv.letter ? `${dv.letter}:  ${name}` : name;
+}
+function renderSaved() {
+  const box = $("#saved-list");
+  $("#saved-where").textContent = S.savedDir ? `Saved in ${S.savedDir}` : "";
+  if (!S.saved.length) {
+    box.innerHTML = `<div class="dev-empty">${icon("history")}<span>No saved scans yet. They appear here as soon as you scan a drive.</span></div>`;
+    return;
+  }
+  box.innerHTML = S.saved.map((sv, i) => {
+    const dv = sv.drive || {};
+    const here = sv.drive_id
+      ? `<span class="chip ok">Drive plugged in</span>`
+      : `<span class="chip warn" title="Plug the drive in to open this scan">Drive not plugged in</span>`;
+    const disk = dv.disk_name && dv.disk_name !== savedDriveName(dv) ? ` · ${esc(dv.disk_name)}` : "";
+    return `<div class="saved-row">
+      <div class="dev-ico ${dv.removable ? "usb" : ""}">${icon(dv.kind === "image" ? "disc" : dv.removable ? "usb" : "drive")}</div>
+      <div class="t"><b title="${esc(sv.path)}">${esc(savedDriveName(dv))}</b>
+        <small>${esc(savedText(sv))} · ${size(sv.found_bytes || 0)} · ${esc(fsName(sv.filesystem))} · ${size(dv.size || 0)}${disk} ${here}</small></div>
+      <div class="acts">
+        <button class="btn primary sm" data-sv-open="${i}">${sv.state === "done" ? "Open" : "Open / resume"}</button>
+        <button class="btn ghost sm" data-sv-show="${i}" title="Show the file in its folder">${icon("folder")}</button>
+        <button class="btn ghost sm" data-sv-del="${i}" title="Delete this saved scan">${icon("trash")}</button>
+      </div></div>`;
+  }).join("");
+}
+async function openSavedScan(path) {
+  if (running() && !(await ask("Stop the current scan?", "Opening a saved scan stops the one that is running.", "Stop and open"))) return;
+  try {
+    const r = await api("/api/scan/open", { path });
+    resetForScan(r.drive.id, r.drive);
+  } catch (e) { toast(e.message); }
+}
+$("#saved-list").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  const sv = S.saved[Number(b.dataset.svOpen ?? b.dataset.svShow ?? b.dataset.svDel)];
+  if (!sv) return;
+  if (b.dataset.svOpen !== undefined) return openSavedScan(sv.path);
+  if (b.dataset.svShow !== undefined) return api("/api/open-folder", { path: sv.path }).catch((e) => toast(e.message));
+  if (b.dataset.svDel !== undefined) {
+    if (!(await ask("Delete this saved scan?", `${savedDriveName(sv.drive)}: ${savedText(sv)}. Only the saved results are deleted; nothing on the drive changes.`, "Delete"))) return;
+    await api("/api/saved/delete", { path: sv.path }).catch((e) => toast(e.message));
+    loadSaved(true);
+  }
+});
+$("#saved-folder").onclick = () => S.savedDir && api("/api/open-folder", { path: S.savedDir }).catch((e) => toast(e.message));
 const savedFor = (id) => S.saved.find((x) => x.drive_id === id);
 function savedText(sv) {
   const what = sv.state === "done" ? "Finished scan" : sv.mode === "deep" ? `Stopped at ${Math.floor(sv.deep_pct || 0)}%` : "Quick scan";
@@ -301,6 +540,7 @@ function driveTitle(d) {
   if (d.lost) return d.label ? `${d.label} (lost)` : `Lost ${fsName(d.filesystem)} partition`;
   if (d.kind === "image") return d.label;
   if (d.letter) return `${d.letter}:  ${d.label || "Local disk"}`;
+  if (d.kind === "disk") return "Whole disk";
   return d.label || `Partition ${d.partition}`;
 }
 const fsName = (fs) => (!fs || fs === "unknown" ? "Unknown" : fs.toUpperCase());
@@ -322,6 +562,178 @@ function disks() {
   return [...map.values()].sort((a, b) => (b.removable - a.removable) || (a.image - b.image) || (a.system - b.system) || (a.disk - b.disk));
 }
 
+/* ---------- fix a drive ---------- */
+const FIX = { checked: false, polling: false, watching: false };
+const LEVEL_ICON = { bad: "alert", warn: "alert", info: "info", ok: "check" };
+function enterFix() {
+  if (!FIX.checked) fixCheck();
+  else pollFix();
+}
+async function fixCheck() {
+  FIX.checked = true;
+  $("#fix-list").innerHTML = `<div class="fix-busy"><span class="spinner"></span>Asking Windows about every drive and USB port… (about 10 seconds)</div>`;
+  await api("/api/fix/check", {}).catch((e) => toast(e.message));
+  pollFix();
+}
+async function pollFix() {
+  if (FIX.polling) return;
+  FIX.polling = true;
+  try {
+    for (;;) {
+      const r = await api("/api/fix").catch(() => null);
+      if (!r || r.state !== "running") { renderFix(r); break; }
+      await new Promise((ok) => setTimeout(ok, 700));
+    }
+  } finally { FIX.polling = false; }
+}
+function tipsHtml(tips) {
+  return tips && tips.length ? `<ul class="fix-tips">${tips.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : "";
+}
+function renderFix(r) {
+  const box = $("#fix-list");
+  if (!r || r.state === "idle") { box.innerHTML = ""; return; }
+  if (r.state === "failed") { box.innerHTML = `<div class="msg bad">${icon("alert")}<span>${esc(r.error)}</span></div>`; return; }
+  const list = r.findings || [];
+  FIX.findings = list;
+  if (!list.length) {
+    box.innerHTML = `<div class="fix-item ok"><div class="fi-ico">${icon("check")}</div><div class="grow"><b>Everything Windows can see looks fine</b>
+      <p>No offline disks, missing letters, failed connections or driver problems. If your drive still doesn't show up, use <b>Watch while I plug it in</b>.</p></div></div>`;
+    return;
+  }
+  box.innerHTML = list.map((f, i) => `<div class="fix-item ${f.level}">
+      <div class="fi-ico">${icon(LEVEL_ICON[f.level] || "info")}</div>
+      <div class="grow"><b>${esc(f.title)}</b><p>${esc(f.text)}</p>${tipsHtml(f.tips)}</div>
+      <div class="fi-acts">
+        ${f.fix ? `<button class="btn ${f.level === "info" ? "ghost" : "primary"} sm" data-fix="${i}" title="${esc(f.fix.why || "")}">${esc(f.fix.label)}</button>` : ""}
+        ${f.scan ? `<button class="btn ghost sm" data-fscan="${i}">${icon("search")}Scan it</button>` : ""}
+      </div></div>`).join("");
+}
+$("#fix-list").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button");
+  if (!b || !FIX.findings) return;
+  if (b.dataset.fix !== undefined) {
+    const f = FIX.findings[Number(b.dataset.fix)];
+    if (!(await ask(f.fix.label, `${f.fix.why || f.text}`, f.fix.label))) return;
+    b.disabled = true;
+    try {
+      const r = await api("/api/fix/apply", { id: f.id });
+      toast(r.message);
+      loadDrives(true);
+    } catch (e) { toast(e.message); b.disabled = false; return; }
+    pollFix();
+  } else if (b.dataset.fscan !== undefined) {
+    const f = FIX.findings[Number(b.dataset.fscan)];
+    go("devices");
+    await loadDrives(true);
+    const want = f.scan.letter ? S.drives.find((d) => d.letter === f.scan.letter)
+      : S.drives.find((d) => d.disk === f.scan.disk && (f.scan.part ? d.partition === f.scan.part : true));
+    if (want) { S.picked = want.id; renderDevices(); toast("Picked. Press Search for lost data, or Find lost partitions on the disk."); }
+    else toast("Pick the drive in the list.");
+  }
+});
+$("#fix-check").onclick = fixCheck;
+
+const EVENT_TEXT = {
+  failed: "got power but couldn't identify itself (Device Descriptor Request Failed)",
+  problem: "connected with a problem",
+  storage: "USB storage connected",
+  disk: "disk appeared",
+  usb: "USB device connected",
+};
+async function watchStart() {
+  try { await api("/api/fix/watch", { seconds: 45 }); } catch (e) { toast(e.message); return; }
+  FIX.watching = true;
+  $("#fw-start").hidden = true;
+  $("#fw-stop").hidden = false;
+  $("#fw-live").hidden = false;
+  for (;;) {
+    const w = await api("/api/fix/watch").catch(() => null);
+    if (!w) break;
+    renderWatch(w);
+    if (w.state !== "watching") break;
+    await new Promise((ok) => setTimeout(ok, 800));
+  }
+  FIX.watching = false;
+  $("#fw-start").hidden = false;
+  $("#fw-start").lastChild.textContent = "Watch again";
+  $("#fw-stop").hidden = true;
+  fixCheck();
+  loadDrives(true);
+}
+function renderWatch(w) {
+  const ev = (w.events || []).map((e) => `<li class="ev ${e.kind}"><span class="t">${e.t.toFixed(0)}s</span>${esc(e.name)} <span class="cell-muted">· ${esc(EVENT_TEXT[e.kind] || "")}</span></li>`).join("");
+  let html = "";
+  if (w.state === "watching") {
+    html = `<div class="fix-busy"><span class="spinner"></span><b>Plug the drive in now.</b> Watching for ${w.left}s more…</div>`;
+  } else if (w.state === "failed") {
+    html = `<div class="msg bad">${icon("alert")}<span>Watching failed: ${esc(w.error)}</span></div>`;
+  } else if (w.result) {
+    const r = w.result;
+    html = `<div class="fix-item ${r.level}"><div class="fi-ico">${icon(LEVEL_ICON[r.level] || "info")}</div>
+      <div class="grow"><b>${esc(r.title)}</b><p>${esc(r.text)}</p>${tipsHtml(r.tips)}</div></div>`;
+  }
+  $("#fw-live").innerHTML = html + (ev ? `<ol class="fix-events">${ev}</ol>` : (w.state === "watching" ? "" : `<p class="cell-muted">Nothing appeared on USB.</p>`));
+}
+$("#fw-start").onclick = watchStart;
+$("#fw-stop").onclick = () => api("/api/fix/watch", { stop: true }).catch(() => {});
+
+/* ---------- what happened? ---------- */
+const HAPPENED = {
+  deleted: { mode: "deep", text: "Pick the drive the files were on, then <b>Search for lost data</b>. Names and folders come first, then everything else found by content. Don't copy anything new onto that drive meanwhile." },
+  formatted: { mode: "deep", text: "Pick the drive (or the whole disk if it has no letter) and press <b>Find lost partitions</b> on it first: the old file system often comes back with its names. Then <b>Search for lost data</b>. Never let Windows format it." },
+  card: { mode: "deep", text: "Pick the card or phone storage, then <b>Search for lost data</b>. When it's done, open <b>Gallery</b> to see every picture and video big." },
+};
+$$("#happened .hap").forEach((b) => {
+  b.onclick = () => {
+    const key = b.dataset.hap;
+    if (key === "missing") { go("fix"); return; }
+    const h = HAPPENED[key];
+    $$("#happened .hap").forEach((x) => x.classList.toggle("on", x === b));
+    S.mode = h.mode;
+    try { localStorage.setItem("tizo-mode", S.mode); } catch {}
+    renderMethod();
+    $("#hap-hint").innerHTML = `${icon("info")}<span>${h.text}</span>`;
+    $("#hap-hint").hidden = false;
+  };
+});
+
+// A stick plugged in while the drive list is open shows up by itself, already picked.
+let driveMask = null;
+setInterval(async () => {
+  if (S.screen !== "devices" || document.hidden) return;
+  const r = await api("/api/drive-mask").catch(() => null);
+  if (!r) return;
+  if (driveMask !== null && r.mask !== driveMask) {
+    const before = new Set(S.drives.map((d) => d.id));
+    await loadDrives(true);
+    const fresh = S.drives.find((d) => !before.has(d.id) && d.removable);
+    if (fresh) {
+      S.picked = fresh.id;
+      renderDevices();
+      toast(`Picked ${driveTitle(fresh).trim()}, the drive you just plugged in.`);
+    }
+  }
+  driveMask = r.mask;
+}, 2500);
+
+/* ---------- eject ---------- */
+async function ejectDisk(disk, name = "") {
+  const busy = S.scan && S.scan.drive && S.scan.drive.disk === disk;
+  if (busy && running()) {
+    if (!(await ask("Stop the scan and eject?", "This drive is being scanned. The scan stops (its progress is saved, you can resume later), then the drive is ejected.", "Stop and eject"))) return;
+  } else if (busy && S.items.length) {
+    if (!(await ask("Eject this drive?", "Its found files stay listed, but they can't be previewed or recovered until you plug it back in and open the saved scan.", "Eject"))) return;
+  }
+  toast("Ejecting…");
+  try {
+    const r = await api("/api/eject", { disk, force_scan: busy });
+    toast(r.message || "You can unplug it now.");
+  } catch (e) {
+    toast(e.message);
+  }
+  loadDrives(true);
+}
+
 function renderDevices() {
   const box = $("#dev-body");
   const list = disks();
@@ -338,12 +750,14 @@ function renderDevices() {
     if (!g.removable && !g.image && g.media === "SSD") chips.push(`<span class="chip warn" title="SSDs erase deleted data on their own (TRIM)">SSD</span>`);
     const head = `<div class="dev-row disk">
       <div class="dev-name"><div class="dev-ico ${g.kind === "usb" ? "usb" : ""}">${icon(g.kind)}</div><div class="t"><b title="${esc(g.name)}">${esc(g.name)}</b><small>${chips.join("")}</small></div></div>
-      <div class="cell-muted">${esc(typeText)}</div><div></div><div class="num">${size(g.size)}</div><div>${searchCell(g.target)}</div></div>`;
+      <div class="cell-muted">${esc(typeText)}</div><div>${g.removable && !g.image ? `<button class="btn ghost sm eject" data-eject="${g.disk}" title="Safely remove this drive">${icon("eject")}Eject</button>` : ""}</div><div class="num">${size(g.size)}</div><div>${searchCell(g.target)}</div></div>`;
     const solo = g.image && g.parts.length === 1;
     const parts = g.parts.map((d) => {
       const used = d.size && d.free ? Math.max(0, Math.min(100, ((d.size - d.free) / d.size) * 100)) : null;
       let sub = d.lost ? `<span class="chip warn">${icon("radar")}Lost</span> ${esc(d.found_by)}`
-        : d.kind === "image" ? esc(d.path) : d.kind === "partition" ? "No drive letter, read through the disk" : esc(d.letter ? `Partition ${d.partition}` : "");
+        : d.kind === "image" ? esc(d.path) : d.kind === "partition" ? "No drive letter, read through the disk"
+        : d.kind === "disk" ? `<span class="chip warn">No partitions</span> Don't format it: scan it, or find lost partitions`
+        : esc(d.letter ? `Partition ${d.partition}` : "");
       const sv = savedFor(d.id);
       if (sv) sub += ` <span class="chip accent" title="${esc(savedText(sv))}">${icon("history")}Saved scan</span>`;
       const last = solo ? searchCell(g.target)
@@ -351,7 +765,7 @@ function renderDevices() {
       return `<div class="dev-row part ${solo ? "solo" : ""} ${d.lost ? "lost" : ""} ${S.picked === d.id ? "sel" : ""}" data-id="${esc(d.id)}" tabindex="0">
         <div class="dev-name"><div class="letter">${d.letter ? esc(d.letter) : icon(d.lost ? "radar" : d.kind === "image" ? "disc" : "drive")}</div>
           <div class="t"><b title="${esc(driveTitle(d))}">${esc(driveTitle(d))}</b>${sub ? `<small>${sub}</small>` : ""}</div></div>
-        <div class="cell-muted">${d.lost ? "Lost partition" : d.kind === "image" ? "Disk image" : d.kind === "partition" ? "Partition" : "Volume"}</div>
+        <div class="cell-muted">${d.lost ? "Lost partition" : d.kind === "image" ? "Disk image" : d.kind === "partition" ? "Partition" : d.kind === "disk" ? "Whole disk" : "Volume"}</div>
         <div class="cell-muted">${esc(fsName(d.filesystem))}</div>
         <div class="num">${size(d.size)}</div>
         <div>${last}</div>
@@ -361,6 +775,9 @@ function renderDevices() {
   }).join("");
   $$("[data-pfind]", box).forEach((b) => {
     b.onclick = (e) => { e.stopPropagation(); findParts(b.dataset.pfind, b.dataset.thorough === "1"); };
+  });
+  $$("[data-eject]", box).forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); ejectDisk(Number(b.dataset.eject)); };
   });
   $$("[data-pstop]", box).forEach((b) => {
     b.onclick = (e) => { e.stopPropagation(); api("/api/partitions/stop", {}).catch(() => {}); };
@@ -457,15 +874,15 @@ document.addEventListener("click", (e) => {
 });
 $("#search-btn").onclick = () => S.picked && startScan(S.picked, S.mode);
 $("#resume-btn").onclick = () => S.picked && startScan(S.picked, S.mode, { resume: true });
-$("#open-scan").onclick = async () => {
+async function pickSavedScan() {
   try {
     const { path } = await api("/api/pick", { kind: "tzscan" });
-    if (!path) return;
-    if (running() && !(await ask("Stop the current scan?", "Opening a saved scan stops the one that is running.", "Stop and open"))) return;
-    const r = await api("/api/scan/open", { path });
-    resetForScan(r.drive.id, r.drive);
+    if (path) await openSavedScan(path);
   } catch (e) { toast(e.message); }
-};
+}
+// The devices page's button leads to the list; picking any .tzscan file stays one click away there.
+$("#open-scan").onclick = () => go("saved");
+$("#saved-other").onclick = pickSavedScan;
 $("#refresh").onclick = () => loadDrives(true);
 $("#open-image").onclick = async () => {
   try {
@@ -509,6 +926,8 @@ function resetForScan(driveId, driveDict, mode = S.mode) {
   showPreview(null);
   $("#nav-scan").hidden = false;
   $("#nav-review").hidden = false;
+  $("#nav-gallery").hidden = false;
+  GAL.items = [];
   const d = S.drives.find((x) => x.id === driveId) || driveDict;
   S.scan = { state: "starting", mode, drive: d || {}, filesystem: d?.filesystem || "unknown", found: 0, counts: {}, progress: { stage: "starting", done: 0, total: 0, elapsed: 0 }, problems: [] };
   go("scan");
@@ -592,6 +1011,9 @@ function renderNav() {
   pill.hidden = !live;
   pill.classList.toggle("live", live);
   $("#nav-review-pill").textContent = nf(S.items.length);
+  const media = S.items.reduce((n, it) => n + (it.category === "image" || it.category === "video" ? 1 : 0), 0);
+  $("#nav-gallery-pill").textContent = nf(media);
+  if (S.screen === "gallery" && media !== GAL.seen) { galleryFilter(); renderGallery(); }
 }
 
 function renderScan() {
@@ -636,7 +1058,8 @@ function renderScan() {
   if (s.autosave) {
     note.innerHTML = `${icon("history")}<span>${s.resumed_from ? `Resumed a scan saved ${ago(s.resumed_from)}. ` : ""}${live ? "Progress is saved every minute: stop any time and resume later from the drive list." : "Saved. Reopen these results any time from the drive list."}</span>`;
   }
-  $("#sc-problems").innerHTML = s.problems.map((x) => `<div class="msg ${s.state === "failed" ? "bad" : "warn"}">${icon("alert")}<span>${esc(x)}</span></div>`).join("");
+  const badNow = s.bad_bytes && live ? [`${size(s.bad_bytes)} could not be read so far (bad sectors). They are skipped; the scan carries on.`] : [];
+  $("#sc-problems").innerHTML = [...badNow, ...s.problems].map((x) => `<div class="msg ${s.state === "failed" ? "bad" : "warn"}">${icon("alert")}<span>${esc(x)}</span></div>`).join("");
 
   const counts = {}, bytes = {};
   for (const it of S.items) {
@@ -861,14 +1284,41 @@ function flatten(all = false) {
 const viewport = $("#viewport");
 const spacer = $("#spacer");
 const ROW = 38;
-viewport.addEventListener("scroll", () => requestAnimationFrame(renderList));
-new ResizeObserver(() => renderList()).observe(viewport);
+// Scrolling must not rebuild rows that stay on screen: rebuilding throws away every thumbnail and
+// video poster, and each one is a fresh read from the drive. Rows are keyed by position + what they
+// show; only rows that appear (or whose state changed) are built, and at most once per frame.
+let renderQueued = false;
+function queueRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; renderList(); });
+}
+viewport.addEventListener("scroll", queueRender, { passive: true });
+new ResizeObserver(queueRender).observe(viewport);
+
+const liveRows = new Map();   // key -> element currently in the spacer
+const tpl = document.createElement("template");
+function patchRows(entries) {
+  const want = new Set();
+  for (const [key, build] of entries) {
+    want.add(key);
+    if (liveRows.has(key)) continue;
+    tpl.innerHTML = build().trim();
+    const el = tpl.content.firstElementChild;
+    spacer.appendChild(el);
+    liveRows.set(key, el);
+    el.querySelectorAll("[data-ind]").forEach((c) => { c.indeterminate = true; });
+  }
+  for (const [key, el] of liveRows) {
+    if (!want.has(key)) { el.remove(); liveRows.delete(key); }
+  }
+}
 
 function gridGeometry() {
   const w = viewport.clientWidth - 24;
   const cols = Math.max(1, Math.floor((w + 10) / 170));
   const tileW = (w - (cols - 1) * 10) / cols;
-  return { cols, rowH: tileW * 0.75 + 30 + 10 };
+  return { cols, tileW, rowH: tileW * 0.75 + 30 + 10 };
 }
 
 function renderList() {
@@ -879,38 +1329,42 @@ function renderList() {
   const top = viewport.scrollTop;
   const first = Math.max(0, Math.floor(top / ROW) - 8);
   const last = Math.min(rows.length, Math.ceil((top + viewport.clientHeight) / ROW) + 8);
-  let html = "";
+  const entries = [];
   for (let i = first; i < last; i++) {
     const r = rows[i];
-    const pad = `padding-left:${r.depth * 20}px`;
     if (r.folder) {
       const f = r.folder;
       const state = f.sel === 0 ? "" : f.sel === f.count ? "checked" : "data-ind";
-      html += `<div class="row folder ${r.open ? "open" : ""} ${f.deleted ? "deleted" : ""}" data-i="${i}" style="top:${i * ROW}px">
+      entries.push([`r${i}|d${f.key}|${r.open ? 1 : 0}|${state}|${f.count}|${r.depth}`, () => {
+        const pad = `padding-left:${r.depth * 20}px`;
+        return `<div class="row folder ${r.open ? "open" : ""} ${f.deleted ? "deleted" : ""}" data-i="${i}" style="top:${i * ROW}px">
         <div class="c-check"><input type="checkbox" class="check" data-fpick="${i}" ${state === "checked" ? "checked" : ""} ${state === "data-ind" ? "data-ind" : ""}></div>
         <div class="name-cell" style="${pad}"><span class="twisty">${icon("chevron")}</span>${icon("folder", "fi")}<span class="nm" title="${esc(f.key)}${f.deleted ? " (deleted folder)" : ""}">${esc(f.name)}</span><span class="cnt">${nf(f.count)}</span></div>
         <div></div><div class="cell-muted">${f.deleted ? "Deleted folder" : ""}</div><div class="cell-muted">Folder</div><div class="num cell-muted">${size(f.bytes)}</div></div>`;
+      }]);
     } else {
       const it = r.file;
-      const sub = r.flat ? (it.named ? it.folder || "(top folder)" : CAT_LABEL[it.category]) : "";
-      html += `<div class="row file ${S.current === it.id ? "current" : ""}" data-i="${i}" style="top:${i * ROW}px">
-        <div class="c-check"><input type="checkbox" class="check" data-pick="${it.id}" ${S.selected.has(it.id) ? "checked" : ""}></div>
+      const sel = S.selected.has(it.id) ? 1 : 0;
+      const cur = S.current === it.id ? 1 : 0;
+      entries.push([`r${i}|f${it.id}|${sel}|${cur}|${r.flat ? 1 : 0}|${r.depth}|${it.status}|${scanGen()}`, () => {
+        const sub = r.flat ? (it.named ? it.folder || "(top folder)" : CAT_LABEL[it.category]) : "";
+        return `<div class="row file ${cur ? "current" : ""}" data-i="${i}" style="top:${i * ROW}px">
+        <div class="c-check"><input type="checkbox" class="check" data-pick="${it.id}" ${sel ? "checked" : ""}></div>
         <div class="name-cell" style="${r.flat ? "" : `padding-left:${r.depth * 20 + 24}px`}">${thumbFor(it, "rthumb") || icon(it.category, "fi").replace("<svg", `<svg ${catStyle(it.category)}`)}<span class="nm" title="${esc(it.path || it.name)}">${esc(it.name)}</span>${sub ? `<span class="sub" title="${esc(sub)}">${esc(sub)}</span>` : ""}<button class="icon-btn eye" data-eye="${it.id}" title="Quick Look (Space)">${icon("eye")}</button></div>
         <div>${chance(it.status)}</div>
         <div class="cell-muted">${date(it.modified) || "—"}</div>
         <div class="cell-muted">${esc((it.ext || "?").toUpperCase())} ${CAT_ONE[it.category].toLowerCase()}</div>
         <div class="num">${size(it.size)}</div></div>`;
+      }]);
     }
   }
-  spacer.innerHTML = html;
-  $$("[data-ind]", spacer).forEach((el) => { el.indeterminate = true; });
+  patchRows(entries);
 }
 
 function gridThumb(it) {
   if (it.status === "overwritten") return icon(it.category);
   if (it.category === "image" && it.size < 40e6) {
-    const src = EMBEDDED_PREVIEW.has(it.ext) ? previewUrl(it.id) : dataUrl(it.id);
-    return `<img loading="lazy" decoding="async" src="${src}" alt="">`;
+    return `<img loading="lazy" decoding="async" src="${thumbUrl(it.id)}" alt="">`;
   }
   if (PLAYABLE_VIDEO.has(it.ext) && it.size < 4e9) {
     // The first frames only: the browser asks for a small byte range.
@@ -921,22 +1375,27 @@ function gridThumb(it) {
 
 function renderGrid() {
   const items = S.shown;
-  const { cols, rowH } = gridGeometry();
+  const { cols, tileW, rowH } = gridGeometry();
   const rows = Math.ceil(items.length / cols);
   spacer.style.height = `${rows * rowH + 12}px`;
   const top = viewport.scrollTop;
   const firstRow = Math.max(0, Math.floor(top / rowH) - 2);
   const lastRow = Math.min(rows, Math.ceil((top + viewport.clientHeight) / rowH) + 2);
-  let html = `<div class="grid-tiles" style="top:${firstRow * rowH + 12}px;grid-template-columns:repeat(${cols},1fr)">`;
+  const w = Math.round(tileW * 100) / 100;
+  const entries = [];
   for (let i = firstRow * cols; i < Math.min(items.length, lastRow * cols); i++) {
     const it = items[i];
-    const thumb = gridThumb(it);
-    html += `<div class="tile ${S.current === it.id ? "current" : ""}" data-g="${i}" ${catStyle(it.category)}>
-      <input type="checkbox" class="check" data-pick="${it.id}" ${S.selected.has(it.id) ? "checked" : ""}>
-      <div class="thumb">${thumb}</div>
-      <div class="cap"><span class="sdot ${it.status}" title="${CHANCE[it.status].label} chances"></span><span class="nm" title="${esc(it.name)}">${esc(it.name)}</span></div></div>`;
+    const sel = S.selected.has(it.id) ? 1 : 0;
+    const cur = S.current === it.id ? 1 : 0;
+    const x = 12 + (i % cols) * (tileW + 10);
+    const y = 12 + Math.floor(i / cols) * rowH;
+    entries.push([`g${i}|${it.id}|${sel}|${cur}|${w}|${cols}|${scanGen()}`, () =>
+      `<div class="tile abs ${cur ? "current" : ""}" data-g="${i}" ${catStyle(it.category).replace('style="', `style="left:${x}px;top:${y}px;width:${w}px;`)}>
+      <input type="checkbox" class="check" data-pick="${it.id}" ${sel ? "checked" : ""}>
+      <div class="thumb">${gridThumb(it)}</div>
+      <div class="cap"><span class="sdot ${it.status}" title="${CHANCE[it.status].label} chances"></span><span class="nm" title="${esc(it.name)}">${esc(it.name)}</span></div></div>`]);
   }
-  spacer.innerHTML = html + "</div>";
+  patchRows(entries);
 }
 spacer.addEventListener("error", (ev) => { if (ev.target.tagName === "IMG") ev.target.outerHTML = icon("image"); }, true);
 
@@ -1057,6 +1516,7 @@ function selectedItems() {
   return [...S.selected].map((id) => S.items[id]).filter(Boolean);
 }
 function renderSelection() {
+  renderGallerySelection();
   const items = selectedItems();
   const bytes = items.reduce((a, it) => a + it.size, 0);
   $("#sel-info").innerHTML = items.length
@@ -1314,9 +1774,10 @@ let qlList = [];
 let qlIdx = 0;
 let qlToken = 0;
 
-function openQuickLook(it) {
+function openQuickLook(it, list = null) {
   if (!it) return;
-  qlList = S.view === "grid" || S.filters.q.trim() ? S.shown.slice() : flatten(true).filter((r) => r.file).map((r) => r.file);
+  qlList = list ? list.slice()
+    : S.view === "grid" || S.filters.q.trim() ? S.shown.slice() : flatten(true).filter((r) => r.file).map((r) => r.file);
   qlIdx = Math.max(0, qlList.findIndex((x) => x.id === it.id));
   if (!ql.open) ql.showModal();
   // Keys belong to the viewer, not to whichever of its buttons got focus
@@ -1393,6 +1854,7 @@ function setRecoverView(view) {
   $("#rd-open").hidden = view !== "done";
   $("#rd-open").classList.add("primary");
   $("#rd-report").hidden = true;
+  $("#rd-eject").hidden = true;
   $("#rd-cancel").textContent = view === "form" ? "Cancel" : view === "running" ? "Stop" : "Close";
 }
 
@@ -1405,8 +1867,12 @@ function openRecover(items) {
   setRecoverView("form");
   $("#rd-msg").innerHTML = low ? `<div class="msg warn">${icon("alert")}<span>${plural(low, "file")} with low chances: ${low === 1 ? "it" : "they"} will most likely not open.</span></div>` : "";
   if (!$("#rd-dest").value) { try { $("#rd-dest").value = localStorage.getItem("tizo-dest") || ""; } catch {} }
-  checkDest();
   dlg.showModal();
+  if (!$("#rd-dest").value) {
+    // First time: a dated folder on the Desktop (or another drive), never on the drive being recovered.
+    api("/api/suggest-dest").then((r) => { if (r.dest && !$("#rd-dest").value) $("#rd-dest").value = r.dest; checkDest(); })
+      .catch(() => checkDest());
+  } else checkDest();
 }
 
 let destTimer = null;
@@ -1475,6 +1941,12 @@ async function pollRecover() {
   $("#rd-done-msg").innerHTML = failed.length
     ? `<div class="msg bad">${icon("alert")}<span>${plural(failed.length, "file")} could not be written: ${esc(failed.slice(0, 3).map((f) => `${f.name} (${f.error})`).join("; "))}${failed.length > 3 ? "…" : ""}</span></div>` : "";
   $("#rd-open").onclick = () => api("/api/open-folder", { path: r.dest }).catch(() => {});
+  // Your files are safe: offer to eject the drive they came from (a USB stick or card).
+  const src = S.scan && S.scan.drive;
+  if (r.state === "done" && src && src.removable && src.kind !== "image") {
+    $("#rd-eject").hidden = false;
+    $("#rd-eject").onclick = async () => { dlg.close(); await ejectDisk(src.disk); };
+  }
   if (r.report) {
     $("#rd-report").hidden = false;
     $("#rd-report").onclick = () => api("/api/open-folder", { path: r.report }).catch(() => {});

@@ -22,6 +22,25 @@ class VolumeAccessError(Exception):
     """The volume exists but cannot be read at the byte level."""
 
 
+class DriveGoneError(OSError):
+    """The drive stopped answering altogether (unplugged, powered off, link dropped)."""
+
+
+# Errors that mean "this spot is unreadable" are skipped; these mean the whole drive is gone.
+_GONE_WINERRORS = {6, 21, 55, 433, 1110, 1167}   # invalid handle, not ready, net gone, no such device, media changed, not connected
+_GONE_ERRNOS = {6, 19, 123}                      # ENXIO, ENODEV, ENOMEDIUM
+_SKIP_STEP = 64 * 1024                           # retry a failed read in pieces this size...
+_SKIP_SMALL = 4096                               # ...then the failing piece in these
+MAX_BAD_RANGES = 200
+
+
+def _is_gone(exc: OSError) -> bool:
+    if isinstance(exc, DriveGoneError):
+        return True
+    code = getattr(exc, "winerror", None) or exc.errno or 0
+    return code in (_GONE_WINERRORS if os.name == "nt" else _GONE_ERRNOS)
+
+
 class BlockReader:
     """Read-only, randomly addressable view of a volume."""
 
@@ -459,9 +478,54 @@ class DeviceBlockReader(BlockReader):
             ) from exc
         self._lock = threading.Lock()
         self.size_known = size > 0
+        self.bad_bytes = 0
+        self.bad_ranges: list[tuple[int, int]] = []
         super().__init__(size or UNKNOWN_SIZE_CAP, label or path)
 
     def read(self, offset: int, length: int) -> bytes:
+        """Read at an offset; unreadable spots come back as zeros and are counted.
+
+        A failing drive has bad sectors: one of them must not end a scan of
+        everything else. A failed read is retried in 64 KB pieces, a failing
+        piece in 4 KB ones, and only what still fails is blanked and recorded
+        in ``bad_bytes`` / ``bad_ranges``. A drive that is gone altogether
+        raises :class:`DriveGoneError` instead of reading as endless zeros.
+        """
+        try:
+            return self._read_raw(offset, length)
+        except OSError as exc:
+            if _is_gone(exc):
+                raise DriveGoneError(exc.errno or 0, f"the drive stopped answering ({exc})", self.path) from exc
+            return self._read_around(offset, length)
+
+    def _read_around(self, offset: int, length: int) -> bytes:
+        out = bytearray()
+        pos, end = offset, offset + length
+        while pos < end:
+            n = min(_SKIP_STEP, end - pos)
+            out += self._read_piece(pos, n, small=False)
+            pos += n
+        return bytes(out)
+
+    def _read_piece(self, pos: int, n: int, small: bool) -> bytes:
+        try:
+            data = self._read_raw(pos, n)
+            return data + b"\x00" * (n - len(data)) if len(data) < n and pos + n <= self.size else data
+        except OSError as exc:
+            if _is_gone(exc):
+                raise DriveGoneError(exc.errno or 0, f"the drive stopped answering ({exc})", self.path) from exc
+            if not small and n > _SKIP_SMALL:
+                return b"".join(self._read_piece(p, min(_SKIP_SMALL, pos + n - p), small=True)
+                                for p in range(pos, pos + n, _SKIP_SMALL))
+            self.bad_bytes += n
+            if len(self.bad_ranges) < MAX_BAD_RANGES:
+                if self.bad_ranges and self.bad_ranges[-1][1] == pos:
+                    self.bad_ranges[-1] = (self.bad_ranges[-1][0], pos + n)
+                else:
+                    self.bad_ranges.append((pos, pos + n))
+            return b"\x00" * n
+
+    def _read_raw(self, offset: int, length: int) -> bytes:
         """Read at an offset, seeking by hand where ``os.pread`` is missing.
 
         On Windows there is no ``os.pread``, and a volume handle is not

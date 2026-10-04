@@ -16,7 +16,10 @@
   <button class="nav-item active" data-goto="devices"><span data-icon="drive"></span>Data recovery</button>
   <button class="nav-item" data-goto="scan" id="nav-scan" hidden><span data-icon="radar"></span><span class="grow" id="nav-scan-label">Current scan</span><span class="nav-pill" id="nav-scan-pill"></span></button>
   <button class="nav-item" data-goto="review" id="nav-review" hidden><span data-icon="files"></span><span class="grow">Found files</span><span class="nav-pill" id="nav-review-pill"></span></button>
+  <button class="nav-item" data-goto="gallery" id="nav-gallery" hidden><span data-icon="image"></span><span class="grow">Gallery</span><span class="nav-pill" id="nav-gallery-pill"></span></button>
+  <button class="nav-item" data-goto="saved"><span data-icon="history"></span><span class="grow">Saved scans</span><span class="nav-pill" id="nav-saved-pill" hidden></span></button>
   <div class="nav-label">Tools</div>
+  <button class="nav-item" data-goto="fix"><span data-icon="plug"></span>Fix a drive</button>
   <button class="nav-item" data-goto="tools"><span data-icon="wrench"></span>Disk tools</button>
   <div class="grow"></div>
   <div class="nav-foot">
@@ -29,11 +32,6 @@
 </nav>
 
 <div class="main">
-  <div class="banner" id="admin-banner" hidden>
-    <span data-icon="shield"></span>
-    <span class="grow">Running without administrator rights. USB sticks and memory cards usually work anyway; internal drives need administrator rights, because deleted files only exist in a drive's raw bytes.</span>
-    <button class="btn primary sm" id="elevate">Restart as administrator</button>
-  </div>
   <div class="banner update" id="update-banner" hidden>
     <span data-icon="sparkle"></span>
     <span class="grow" id="update-text"></span>
@@ -54,6 +52,14 @@
         <button class="btn ghost" id="refresh"><span data-icon="refresh"></span>Refresh</button>
       </div>
     </header>
+    <div class="happened" id="happened">
+      <span class="happened-q">What happened?</span>
+      <button class="hap" data-hap="deleted"><span data-icon="trash"></span><span><b>I deleted files</b><small>or emptied the Recycle Bin</small></span></button>
+      <button class="hap" data-hap="formatted"><span data-icon="disc"></span><span><b>Formatted or RAW</b><small>"you need to format the disk"</small></span></button>
+      <button class="hap" data-hap="card"><span data-icon="image"></span><span><b>Photos or videos</b><small>camera, phone, memory card</small></span></button>
+      <button class="hap" data-hap="missing"><span data-icon="plug"></span><span><b>Drive doesn't show up</b><small>or keeps disconnecting</small></span></button>
+    </div>
+    <div class="hap-hint" id="hap-hint" hidden></div>
     <div class="devtable">
       <div class="dev-thead"><div>Device / partition</div><div>Type</div><div>File system</div><div class="num">Size</div><div>In use</div></div>
       <div class="dev-body" id="dev-body"><div class="dev-empty"><span class="spinner"></span>Looking for drives…</div></div>
@@ -193,6 +199,76 @@
     </footer>
   </section>
 
+  <!-- ============ gallery ============ -->
+  <section class="screen" id="screen-gallery" hidden>
+    <header class="rv-head gal-head">
+      <div class="rv-titles"><h1>Gallery</h1><p id="gal-count"></p></div>
+      <div class="grow"></div>
+      <div class="seg gal-kind" id="gal-kind">
+        <button data-k="media" class="active">All</button><button data-k="image">Pictures</button><button data-k="video">Videos</button>
+      </div>
+      <label class="opt gal-opt"><input type="checkbox" class="check" id="gal-low"><span>Show low chances</span></label>
+      <select id="gal-sort" title="Order">
+        <option value="date">Newest first</option><option value="size">Largest first</option><option value="name">By name</option>
+      </select>
+      <input type="range" id="gal-zoom" min="110" max="360" value="190" title="Picture size">
+    </header>
+    <div class="gal-viewport" id="gal-viewport"><div class="gal-spacer" id="gal-spacer"></div></div>
+    <footer class="actionbar">
+      <div class="sel" id="gal-sel"></div>
+      <button class="btn ghost sm" id="gal-all">Select all shown</button>
+      <button class="btn ghost sm" id="gal-none">Clear selection</button>
+      <div class="grow"></div>
+      <button class="btn primary lg" id="gal-recover" disabled><span data-icon="download"></span>Recover</button>
+    </footer>
+  </section>
+
+  <!-- ============ saved scans ============ -->
+  <section class="screen" id="screen-saved" hidden>
+    <header class="page-head">
+      <div>
+        <h1>Saved scans</h1>
+        <p>Every scan saves itself while it runs. Open one to see its files again, or to carry on where it stopped.</p>
+      </div>
+      <div class="head-actions">
+        <button class="btn ghost" id="saved-folder"><span data-icon="folder"></span>Show folder</button>
+        <button class="btn ghost" id="saved-other"><span data-icon="history"></span>Open a scan file…</button>
+      </div>
+    </header>
+    <div class="saved-list" id="saved-list"></div>
+    <p class="saved-where" id="saved-where"></p>
+  </section>
+
+  <!-- ============ fix a drive ============ -->
+  <section class="screen" id="screen-fix" hidden>
+    <header class="page-head">
+      <div>
+        <h1>Fix a drive</h1>
+        <p>Drive not showing up? TizoRecover checks every step from the plug to a drive letter and fixes what it safely can. It never formats or initializes anything.</p>
+      </div>
+    </header>
+    <div class="fix-wrap">
+      <div class="fix-card" id="fix-watch">
+        <div class="fix-card-head"><div class="tool-ico"><span data-icon="plug"></span></div>
+          <div class="grow"><h3>Watch while I plug it in</h3><p>The best test: TizoRecover watches every USB port while you connect the drive and tells you where it gets stuck.</p></div></div>
+        <ol class="fix-steps">
+          <li>Unplug the drive.</li>
+          <li>Press <b>Start watching</b>.</li>
+          <li>Plug it in, straight into the PC if you can (no adapters or hubs).</li>
+        </ol>
+        <div class="fix-watch-live" id="fw-live" hidden></div>
+        <div class="fix-actions"><button class="btn primary" id="fw-start"><span data-icon="radar"></span>Start watching</button>
+          <button class="btn ghost" id="fw-stop" hidden>Stop</button></div>
+      </div>
+      <div class="fix-card">
+        <div class="fix-card-head"><div class="tool-ico"><span data-icon="shield"></span></div>
+          <div class="grow"><h3>Check my drives</h3><p>Looks for offline disks, missing drive letters, unreadable (RAW) drives, failed connections, driver problems and USB power saving.</p></div>
+          <button class="btn ghost" id="fix-check"><span data-icon="refresh"></span>Check again</button></div>
+        <div class="fix-list" id="fix-list"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ tools ============ -->
   <section class="screen" id="screen-tools" hidden>
     <header class="page-head">
@@ -235,6 +311,7 @@
   </div>
   <div class="dlg-foot">
     <button class="btn ghost" id="rd-report" hidden>Open report</button>
+    <button class="btn ghost" id="rd-eject" hidden><span data-icon="eject"></span>Eject the drive</button>
     <div class="grow"></div>
     <button class="btn ghost" id="rd-cancel">Cancel</button>
     <button class="btn" id="rd-open" hidden><span data-icon="folder"></span>Show files</button>
@@ -305,6 +382,13 @@
 <dialog id="confirm-dialog">
   <div class="dlg-head"><h2 id="cf-title"></h2><p id="cf-text"></p></div>
   <div class="dlg-foot"><div class="grow"></div><button class="btn ghost" id="cf-no">Cancel</button><button class="btn primary" id="cf-yes">OK</button></div>
+</dialog>
+
+<dialog id="error-dialog">
+  <div class="dlg-head"><h2>Something went wrong</h2>
+    <p>TizoRecover hit an error. Your drive was not changed, and a scan that is running keeps going. Copy the report if you want to send it to us.</p>
+    <pre class="err-text" id="er-text"></pre></div>
+  <div class="dlg-foot"><div class="grow"></div><button class="btn ghost" id="er-copy">Copy report</button><button class="btn primary" id="er-close">OK</button></div>
 </dialog>
 
 <script src="app.js" type="module"></script>

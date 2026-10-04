@@ -15,8 +15,15 @@
 5. Review the results the way the drive had them (**Deleted or lost**, with folders) or by type (**Reconstructed**, found by content), with search, filters and a preview of pictures, video, audio, PDFs, text and Office documents, plus a hex view of anything.
 6. Every file shows its **recovery chances**: **High**, **Average** (part of it may have been reused) or **Low** (overwritten), so you know what is worth saving.
 7. **Quick Look**: press Space (or double-click) for a full-window preview and step through files with the arrow keys. Thumbnails show right in the list; camera RAW files, music with album art and videos the preview cannot play show the picture stored inside them.
-8. **Lost partitions and "undo a format"**: *Find lost partitions* looks for file systems that were deleted from the partition table or formatted over (NTFS, FAT32, exFAT through their backup boot sectors; Linux ext through backup superblocks). A drive that was quick-formatted can be scanned *as it was before*, names and folders included. Searching a whole disk needs administrator rights; a USB stick's own volume does not.
+8. **Lost partitions and "undo a format"**: *Find lost partitions* looks for file systems that were deleted from the partition table or formatted over (NTFS, FAT32, exFAT through their backup boot sectors; Linux ext through backup superblocks). A drive that was quick-formatted can be scanned *as it was before*, names and folders included. 
 9. **Recover** the files and folders you tick to a folder on *another* drive. TizoRecover never writes to the drive you are recovering from, refuses to save onto it, and checks the destination has room.
+
+10. **Gallery**: every picture and video found, big, in one place, newest first. Click one to see it full size and step through with the arrow keys; tick what you want back.
+11. **Fix a drive**: drive not showing up? *Watch while I plug it in* follows the drive from the plug to a drive letter and says where it gets stuck (no power, a failing USB 3 connection, a driver, no drive letter, no partitions). *Check my drives* finds offline disks, missing letters, unreadable (RAW) drives, failed connections and USB power saving, and fixes what it safely can, asking first. It never formats or initializes anything.
+12. **Eject** USB drives and memory cards from the drive list, or right after recovering.
+13. **Saved scans**: every scan saves itself; one page lists them all, with where they are kept.
+
+TizoRecover always runs as administrator (Windows asks when it starts): deleted files only exist in a drive's raw bytes, and reading those needs it. On Linux it asks for the root password the same way.
 
 Under *Disk tools* it can also **erase a removable drive** (quick or full), behind a deliberately slow, typed confirmation.
 

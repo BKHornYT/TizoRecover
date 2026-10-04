@@ -57,8 +57,8 @@ Name: "{autoprograms}\TizoRecover"; Filename: "{app}\TizoRecover.exe"
 Name: "{autodesktop}\TizoRecover"; Filename: "{app}\TizoRecover.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\TizoRecover.exe"; Description: "{cm:LaunchProgram,TizoRecover}"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\TizoRecover.exe"; Flags: nowait; Check: IsUpdate
+Filename: "{app}\TizoRecover.exe"; Description: "{cm:LaunchProgram,TizoRecover}"; Flags: nowait postinstall skipifsilent shellexec
+Filename: "{app}\TizoRecover.exe"; Flags: nowait shellexec; Check: IsUpdate
 
 [Code]
 function IsUpdate: Boolean;
