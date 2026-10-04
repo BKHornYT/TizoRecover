@@ -357,8 +357,11 @@ def recover_fat(
     progress: Callable[[int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     read_data: bool = False,
+    include_live: bool = False,
 ) -> Iterator[FileCandidate]:
     """Walk the whole directory tree and yield every deleted file it still knows.
+
+    ``include_live`` also yields files that were not deleted (lost volumes).
 
     Live folders are walked as well as deleted ones: a file deleted from a
     folder that still exists is the most common case of all. Candidates carry
@@ -378,12 +381,13 @@ def recover_fat(
     else:
         entries = parse_dir_entries(src.at(fat.root_dir_offset, fat.root_entries * 32))
     yield from _walk(src, fat, table, entries, path_prefix, False, 0, max_depth,
-                     volume, progress, should_stop, read_data, seen)
+                     volume, progress, should_stop, read_data, seen, include_live)
 
 
 def _walk(src, fat: FatInfo, table: list[int], entries: list[DirEntry], prefix: str,
           in_deleted: bool, depth: int, max_depth: int, volume: str, progress,
-          should_stop, read_data: bool, seen: set[int]) -> Iterator[FileCandidate]:
+          should_stop, read_data: bool, seen: set[int],
+          include_live: bool = False) -> Iterator[FileCandidate]:
     if depth > max_depth:
         return
     if progress is not None:
@@ -407,9 +411,9 @@ def _walk(src, fat: FatInfo, table: list[int], entries: list[DirEntry], prefix: 
             sub = f"{prefix}/{_sanitise(entry.name)}" if prefix else _sanitise(entry.name)
             yield from _walk(src, fat, table, read_dir_entries(src, fat, chain), sub,
                              in_deleted or entry.deleted, depth + 1, max_depth, volume,
-                             progress, should_stop, read_data, seen)
+                             progress, should_stop, read_data, seen, include_live)
             continue
-        if not (entry.deleted or in_deleted):
+        if not (entry.deleted or in_deleted or include_live):
             continue
         if entry.cluster < 2 or entry.size == 0:
             continue
@@ -427,7 +431,7 @@ def _walk(src, fat: FatInfo, table: list[int], entries: list[DirEntry], prefix: 
         extents = chain_extents(fat, chain, size)
         fragmented = len(extents) > 1
         reasons = ["directory entry marked deleted (0xE5)" if entry.deleted
-                   else "inside a deleted folder"]
+                   else "inside a deleted folder" if in_deleted else "in use when this volume was lost"]
         reasons.append(f"{len(chain)} cluster(s), long name "
                        f"{'recovered' if entry.name != entry.short_name else 'unavailable'}")
         if guessed:

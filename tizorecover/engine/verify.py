@@ -23,23 +23,28 @@ OVERWRITTEN = "overwritten"
 
 ALIASES = {
     "jpeg": "jpg", "jpe": "jpg", "jfif": "jpg",
-    "tiff": "tif", "m4v": "mp4", "m4a": "mp4", "3gp": "mp4", "mov": "mov",
+    "tiff": "tif", "m4v": "mp4", "m4a": "mp4", "3gp": "mp4", "mov": "mp4", "cr3": "mp4",
+    "avif": "mp4", "heic": "mp4", "heif": "mp4",
+    "cr2": "tif", "nef": "tif", "arw": "tif", "dng": "tif", "pef": "tif", "srw": "tif",
+    "orf": "tif", "rw2": "tif", "webm": "mkv", "wma": "wmv", "otf": "ttf", "aif": "aiff",
+    "vsdx": "zip",
     "docx": "zip", "xlsx": "zip", "pptx": "zip", "odt": "zip", "ods": "zip",
     "odp": "zip", "jar": "zip", "apk": "zip", "epub": "zip",
     "xls": "doc", "ppt": "doc", "msg": "doc",
-    "heif": "heic", "avif": "heic", "db": "sqlite", "sqlite3": "sqlite",
+    "db": "sqlite", "sqlite3": "sqlite",
     "dll": "exe", "sys": "exe", "tgz": "gz",
 }
 
 CATEGORIES = {
     "image": {"jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif",
-              "avif", "ico", "svg", "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "psd"},
+              "avif", "ico", "svg", "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "psd",
+              "pef", "srw", "raf", "x3f", "nrw"},
     "video": {"mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "flv", "3gp", "mts", "m2ts",
-              "mpg", "mpeg", "ts", "vob"},
+              "mpg", "mpeg", "ts", "vob", "m4v"},
     "audio": {"mp3", "wav", "flac", "ogg", "opus", "m4a", "aac", "wma", "aiff", "aif", "mid", "midi"},
     "document": {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
                  "rtf", "txt", "md", "csv", "html", "htm", "xml", "json", "epub", "pages",
-                 "key", "numbers", "log", "ini", "cfg", "yaml", "yml"},
+                 "key", "numbers", "log", "ini", "cfg", "yaml", "yml", "vsdx"},
     "archive": {"zip", "rar", "7z", "gz", "tgz", "tar", "bz2", "xz", "zst", "iso", "cab"},
     "code": {"py", "js", "ts", "c", "h", "cpp", "cs", "java", "go", "rs", "php", "rb",
              "sh", "ps1", "bat", "css", "lua", "kt", "swift", "sql"},

@@ -27,6 +27,7 @@ from tizorecover.engine.drives import Drive
 from tizorecover.engine.formats import ByteSourceView
 from tizorecover.engine.partitions import PatchedReader
 from tizorecover.engine.fs import exfat as exfat_fs
+from tizorecover.engine.fs import ext4 as ext_fs
 from tizorecover.engine.fs import fat as fat_fs
 from tizorecover.engine.fs import ntfs as ntfs_fs
 from tizorecover.engine.results import FileCandidate, Strategy
@@ -312,7 +313,10 @@ class ScanJob:
             self.src = LockedSource(ByteSourceView(self.reader))
             self.fingerprint = tzscan.fingerprint(self.src)
             self.filesystem = detect_filesystem(self.src)
-            self.allocation = alloc_mod.detect(self.src, self.filesystem)
+            # A lost volume's own bitmap marks its files "in use", which says
+            # nothing about whether the space's current owner wrote over them,
+            # and its free space is not where its files are: no map for it.
+            self.allocation = None if self.drive.lost else alloc_mod.detect(self.src, self.filesystem)
             if self.allocation is not None:
                 self.free_bytes = self.allocation.free_bytes
             if self.resume is not None:
@@ -352,23 +356,25 @@ class ScanJob:
             total = len(mft_map) * boot.mft_record_size if mft_map else 0
             self._stage("records", total)
             for cand in ntfs_fs.recover_ntfs(self.src, self.drive.id, progress=self._advance,
-                                             should_stop=stop):
+                                             should_stop=stop, include_live=self.drive.lost):
                 self._add(cand)
             if not self.stopping:
                 self.progress.done = self.progress.total
         elif fs in ("fat", "fat32"):
             self._stage("records", 0)
             for cand in fat_fs.recover_fat(self.src, self.drive.id, progress=self._advance,
-                                           should_stop=stop):
+                                           should_stop=stop, include_live=self.drive.lost):
                 self._add(cand)
         elif fs == "exfat":
             self._stage("records", 0)
             for cand in exfat_fs.recover_exfat(self.src, self.drive.id, progress=self._advance,
-                                               should_stop=stop):
+                                               should_stop=stop, include_live=self.drive.lost):
                 self._add(cand)
         elif fs.startswith("ext"):
-            self.problems.append("ext2/3/4 (Linux): reading names and folders is not supported yet. "
-                                 "All recovery methods still finds files by their content.")
+            self._stage("records", 0)
+            for cand in ext_fs.recover_ext(self.src, self.drive.id, progress=self._advance,
+                                           should_stop=stop, include_live=self.drive.lost):
+                self._add(cand)
         else:
             self.problems.append(f"No readable filesystem ({fs}). Run a deep scan to find "
                                  f"files by their content.")

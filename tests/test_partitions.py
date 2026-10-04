@@ -56,6 +56,7 @@ def build_disk() -> tuple[bytes, dict]:
     nt = fsimages.NtfsBuilder()
     secret = noisy_png(90, 70, 11)
     nt.add_deleted_file("before the format.png", secret)
+    nt.add_live_file("still there when formatted.txt", b"a file nobody deleted\n" * 200)
     nt_img = bytearray(nt.build())
     nt_start = 64 * MIB
     disk[nt_start:nt_start + len(nt_img)] = nt_img
@@ -98,6 +99,8 @@ def test_search() -> list[str]:
         job.wait(60)
         names = {it.candidate.name: it for it in job.items}
         it = names.get("before the format.png")
+        failures += _check("undo format: live files of the old volume listed too",
+                           "still there when formatted.txt" in names, str(sorted(names)))
         failures += _check("undo format: files from before the format, by name",
                            job.filesystem == "ntfs" and it is not None
                            and job.data(it).read_all() == want["secret"],

@@ -49,10 +49,16 @@ You type a confirmation phrase, tick a box and wait out a short countdown before
 | NTFS (Windows drives, big USB disks) | ✅ | ✅ |
 | FAT12 / FAT16 / FAT32 (USB sticks, SD cards) | ✅ | ✅ |
 | exFAT (newer USB sticks, SD cards) | ✅ | ✅ |
-| ext4 (Linux) | planned | ✅ |
+| ext2/3/4 (Linux, Raspberry Pi, Android cards) | ✅ (deleted files from the journal) | ✅ |
 | Disk image files (`.img`, `.dd`, `.raw`) | ✅ | ✅ |
 
-Recognised by content: JPEG, PNG, GIF, BMP, TIFF, WebP, HEIC, ICO, SVG, MP4, MOV, AVI, MP3, WAV, FLAC, OGG, PDF, ZIP (and DOCX/XLSX/PPTX), DOC/XLS, 7z, RAR, GZIP, SQLite, EXE, ELF.
+Recognised by content (about 60 types, each sized exactly where the format allows and named by what is inside):
+
+- **Photos:** JPEG, PNG, GIF, BMP, WebP, HEIC, AVIF, TIFF, PSD, ICO, SVG, and camera RAW: CR2, CR3, NEF, ARW, DNG, PEF, SRW, ORF, RW2, RAF
+- **Video:** MP4, MOV, M4V, 3GP, MKV, WebM, AVI, WMV, FLV, MPEG-TS / M2TS (camcorders)
+- **Audio:** MP3, M4A, WAV, FLAC, OGG, WMA, AIFF, MIDI
+- **Documents:** PDF, DOCX, XLSX, PPTX, VSDX, ODT/ODS/ODP, EPUB, DOC/XLS/PPT, RTF, SQLite
+- **Archives and more:** ZIP, 7z, RAR, GZIP, ISO images, APK, JAR, EXE/DLL, ELF, TTF/OTF fonts
 
 ## Honest limits
 

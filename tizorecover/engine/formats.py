@@ -39,6 +39,7 @@ class Extent:
     verdict: Verdict = Verdict.SUSPECT
     notes: list[str] = field(default_factory=list)
     complete: bool = True
+    ext: str | None = None   # the real type when the contents say more than the magic (NEF in a TIFF)
 
 
 class ByteSourceView:
@@ -1199,6 +1200,476 @@ def _xml_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
     return None
 
 
+
+# --------------------------------------------------------------------------
+# TIFF and camera RAW (CR2, NEF, ARW, DNG, PEF, SRW, ORF, RW2) + Fuji RAF
+# --------------------------------------------------------------------------
+
+_TIFF_TYPE = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4,
+              16: 8, 17: 8, 18: 8}
+_TIFF_PAIRS = ((0x0111, 0x0117), (0x0144, 0x0145), (0x0201, 0x0202))   # strips, tiles, JPEG preview
+_TIFF_SUB = (0x014A, 0x8769, 0x8825, 0xA005)                          # SubIFDs, Exif, GPS, Interop
+_RAW_MAKERS = (("NIKON", "nef"), ("SONY", "arw"), ("PENTAX", "pef"), ("RICOH", "pef"),
+               ("SAMSUNG", "srw"), ("OLYMPUS", "orf"), ("OM DIGITAL", "orf"), ("PANASONIC", "rw2"),
+               ("LEICA", "dng"), ("HASSELBLAD", "dng"))
+
+
+def _tiff_values(src: ByteSource, base: int, e: str, typ: int, count: int, field: bytes) -> list[int]:
+    fmt = {3: "H", 4: "I", 13: "I", 16: "Q", 18: "Q"}.get(typ)
+    if fmt is None:
+        return []
+    width = struct.calcsize(fmt)
+    count = min(count, 65536)
+    if width * count <= 4:
+        raw = field[:width * count]
+    else:
+        raw = src.at(base + struct.unpack(e + "I", field)[0], width * count)
+    k = len(raw) // width
+    return list(struct.unpack(e + fmt * k, raw[:k * width]))
+
+
+def _tiff_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    """Follow every IFD (sub-IFDs, Exif, GPS too); the file ends after its last strip, tile or value."""
+    head = src.at(off, 16)
+    if len(head) < 16:
+        return None
+    magic = head[:4]
+    if magic in (b"II*\x00", b"IIRO", b"IIRS", b"IIU\x00"):
+        e = "<"
+    elif magic == b"MM\x00*":
+        e = ">"
+    else:
+        return None
+    queue = [struct.unpack(e + "I", head[4:8])[0]]
+    seen: set[int] = set()
+    end, ifds, had_data, make, dng = 8, 0, False, "", False
+    while queue and ifds < 64:
+        ifd = queue.pop(0)
+        if ifd in seen or ifd < 8 or ifd > 512 * MIB:
+            continue
+        seen.add(ifd)
+        raw_n = src.at(off + ifd, 2)
+        if len(raw_n) < 2:
+            continue
+        n = struct.unpack(e + "H", raw_n)[0]
+        if n == 0 or n > 2000:
+            continue
+        table = src.at(off + ifd + 2, n * 12 + 4)
+        if len(table) < n * 12 + 4:
+            continue
+        ifds += 1
+        end = max(end, ifd + 2 + n * 12 + 4)
+        tags: dict[int, tuple[int, int, bytes]] = {}
+        for k in range(n):
+            ent = table[k * 12:(k + 1) * 12]
+            tag, typ, count = struct.unpack(e + "HHI", ent[:8])
+            field = ent[8:12]
+            size = _TIFF_TYPE.get(typ, 0) * count
+            if size > 4:
+                ptr = struct.unpack(e + "I", field)[0]
+                if ptr + size > 4096 * MIB:
+                    return None
+                end = max(end, ptr + size)
+            tags[tag] = (typ, count, field)
+            if tag == 0x010F and typ == 2:
+                text = field[:count] if size <= 4 else src.at(off + struct.unpack(e + "I", field)[0], min(count, 64))
+                make = text.split(b"\x00")[0].decode("latin-1", "replace").strip().upper()
+            if tag == 0xC612:
+                dng = True
+        for off_tag, len_tag in _TIFF_PAIRS:
+            if off_tag in tags and len_tag in tags:
+                offs = _tiff_values(src, off, e, *tags[off_tag])
+                lens = _tiff_values(src, off, e, *tags[len_tag])
+                for o, n_ in zip(offs, lens):
+                    if o and n_ and o + n_ < 4096 * MIB:
+                        end = max(end, o + n_)
+                        had_data = True
+        for sub in _TIFF_SUB:
+            if sub in tags:
+                queue.extend(_tiff_values(src, off, e, *tags[sub]))
+        nxt = struct.unpack(e + "I", table[n * 12:n * 12 + 4])[0]
+        if nxt:
+            queue.append(nxt)
+    if ifds == 0:
+        return None
+    kind = "tif"
+    if magic in (b"IIRO", b"IIRS"):
+        kind = "orf"
+    elif magic == b"IIU\x00":
+        kind = "rw2"
+    elif head[8:10] == b"CR":
+        kind = "cr2"
+    elif dng:
+        kind = "dng"
+    else:
+        for maker, ext in _RAW_MAKERS:
+            if make.startswith(maker):
+                kind = ext
+                break
+    notes = [f"{ifds} IFDs" + (f", made by {make.title()}" if make else "")]
+    if kind == "rw2":
+        # Panasonic keeps the raw data outside the strips the IFD lists.
+        end = max(end, _until_blank(src, off + end, limit, 512 * MIB) - off)
+    if off + end > src.size:
+        return Extent(src.size - off, Verdict.PARTIAL, notes + ["runs past the data"], False, ext=kind)
+    return Extent(end, Verdict.VALID if had_data else Verdict.SUSPECT, notes, ext=kind)
+
+
+def _raf_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    head = src.at(off, 108)
+    if len(head) < 108 or not head.startswith(b"FUJIFILMCCD-RAW "):
+        return None
+    jpeg_off, jpeg_len, hdr_off, hdr_len, cfa_off, cfa_len = struct.unpack(">IIIIII", head[84:108])
+    end = max(jpeg_off + jpeg_len, hdr_off + hdr_len, cfa_off + cfa_len)
+    if end <= 108 or end > 2048 * MIB:
+        return None
+    if off + end > src.size:
+        return Extent(src.size - off, Verdict.PARTIAL, ["runs past the data"], False)
+    return Extent(end, Verdict.VALID, ["Fujifilm RAW, sections line up"])
+
+
+# --------------------------------------------------------------------------
+# ISO base media, one resolver for the whole family, named by brand
+# --------------------------------------------------------------------------
+
+_ISO_EXT = {b"heic": "heic", b"heix": "heic", b"hevc": "heic", b"heim": "heic", b"heis": "heic",
+            b"hevx": "heic", b"msf1": "heic", b"avif": "avif", b"avis": "avif", b"crx ": "cr3",
+            b"qt  ": "mov", b"M4A ": "m4a", b"M4B ": "m4a", b"M4P ": "m4a", b"M4V ": "m4v"}
+
+
+def _iso_any(src: ByteSource, off: int, limit: int) -> Extent | None:
+    if off < 0 or not _need(src, off, 12):
+        return None
+    box_size = _u32be(src, off)
+    if box_size < 12 or box_size > 4096 or src.at(off + 4, 4) != b"ftyp":
+        return None
+    major = src.at(off + 8, 4)
+    compat = src.at(off + 16, max(0, box_size - 16))
+    brands = [major] + [compat[i:i + 4] for i in range(0, len(compat) - 3, 4)]
+    if not all(all(32 <= c < 127 for c in b) for b in brands):
+        return None
+    ext = _ISO_EXT.get(major)
+    if ext is None or ext == "heic" and b"avif" in brands:
+        ext = "avif" if b"avif" in brands else ext
+    if ext is None:
+        ext = next((_ISO_EXT[b] for b in brands if _ISO_EXT.get(b) in ("heic", "avif", "cr3")), None)
+    if ext is None:
+        ext = "3gp" if major.startswith((b"3gp", b"3g2")) else "mp4"
+    extent = _isobmff_walk(src, off, limit)
+    if extent is not None:
+        extent.notes.insert(0, f"brand {major.decode('ascii', 'replace').strip()}")
+        extent.ext = ext
+    return extent
+
+
+# --------------------------------------------------------------------------
+# Matroska / WebM, ASF (WMV/WMA), FLV, MPEG transport streams
+# --------------------------------------------------------------------------
+
+def _ebml_vint(src: ByteSource, pos: int) -> tuple[int, int, bool] | None:
+    b = src.at(pos, 8)
+    if not b or b[0] == 0:
+        return None
+    length = 9 - b[0].bit_length()
+    if len(b) < length:
+        return None
+    value = b[0] & ((1 << (8 - length)) - 1)
+    for x in b[1:length]:
+        value = (value << 8) | x
+    return value, length, value == (1 << (7 * length)) - 1
+
+
+def _mkv_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    if src.at(off, 4) != b"\x1a\x45\xdf\xa3":
+        return None
+    v = _ebml_vint(src, off + 4)
+    if v is None or v[2] or v[0] > 4096:
+        return None
+    header = src.at(off + 4 + v[1], v[0])
+    if b"webm" in header:
+        ext = "webm"
+    elif b"matroska" in header:
+        ext = "mkv"
+    else:
+        return None
+    seg = off + 4 + v[1] + v[0]
+    if src.at(seg, 4) != b"\x18\x53\x80\x67":
+        return None
+    s = _ebml_vint(src, seg + 4)
+    if s is None:
+        return None
+    size, length, unknown = s
+    if unknown:
+        end = _until_blank(src, seg, limit, 16 * 1024 * MIB)
+        return Extent(end - off, Verdict.SUSPECT, ["live-recorded (size unknown); sized to the data"], False, ext=ext)
+    end = seg + 4 + length + size
+    if end > src.size:
+        return Extent(src.size - off, Verdict.PARTIAL, ["segment runs past the data"], False, ext=ext)
+    return Extent(end - off, Verdict.VALID, ["EBML header and segment size line up"], ext=ext)
+
+
+_ASF_HEADER = bytes.fromhex("3026B2758E66CF11A6D900AA0062CE6C")
+_ASF_FILE_PROPS = bytes.fromhex("A1DCAB8C47A9CF118EE400C00C205365")
+_ASF_VIDEO = bytes.fromhex("C0EF19BC4D5BCF11A8FD00805F5C442B")
+
+
+def _asf_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    if src.at(off, 16) != _ASF_HEADER:
+        return None
+    hsize = _u64le(src, off + 16)
+    if not 30 <= hsize <= 1 * MIB:
+        return None
+    header = src.at(off, hsize)
+    i = header.find(_ASF_FILE_PROPS)
+    if i < 0 or i + 48 > len(header):
+        return None
+    size = struct.unpack_from("<Q", header, i + 40)[0]
+    if size < hsize or size > 64 * 1024 * MIB:
+        return None
+    ext = "wmv" if _ASF_VIDEO in header else "wma"
+    if off + size > src.size:
+        return Extent(src.size - off, Verdict.PARTIAL, ["file size field exceeds data"], False, ext=ext)
+    return Extent(size, Verdict.VALID, ["ASF file size field"], ext=ext)
+
+
+def _flv_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    head = src.at(off, 13)
+    if len(head) < 13 or head[:4] != b"FLV\x01" or head[5:9] != b"\x00\x00\x00\x09" or head[9:13] != bytes(4):
+        return None
+    pos = off + 13
+    tags = 0
+    end = min(limit, src.size)
+    while pos + 11 <= end:
+        t = src.at(pos, 11)
+        if len(t) < 11 or (t[0] & 0x1F) not in (8, 9, 18):
+            break
+        dsize = int.from_bytes(t[1:4], "big")
+        nxt = pos + 11 + dsize
+        if nxt + 4 > end or _u32be(src, nxt) != 11 + dsize:
+            break
+        pos = nxt + 4
+        tags += 1
+    if tags == 0:
+        return None
+    return Extent(pos - off, Verdict.VALID if tags >= 3 else Verdict.SUSPECT, [f"{tags} FLV tags"])
+
+
+_TS_MAGIC = bytes.fromhex("47400010")
+
+
+def _ts_kind(stride: int, ext: str):
+    lead = stride - 188
+
+    def quick(buf: bytes, i: int) -> bool:
+        for k in (1, 2, 3):
+            at = i + lead + k * stride
+            if at < len(buf) and buf[at] != 0x47:
+                return False
+        return True
+
+    def walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+        end = min(limit, src.size)
+        pos = off
+        packets = 0
+        while pos + stride <= end:
+            window = src.at(pos, min(stride * 4096, end - pos))
+            k = 0
+            while k + stride <= len(window) and window[k + lead] == 0x47:
+                k += stride
+            packets += k // stride
+            pos += k
+            if k < len(window) - stride + 1:
+                break
+        if packets < 8:
+            return None
+        return Extent(pos - off, Verdict.VALID if packets >= 50 else Verdict.SUSPECT,
+                      [f"{packets} transport packets"], ext=ext)
+
+    return walk, quick
+
+
+_M2TS_WALK, _M2TS_QUICK = _ts_kind(192, "m2ts")
+_TS_WALK, _TS_QUICK = _ts_kind(188, "ts")
+
+
+# --------------------------------------------------------------------------
+# PSD, AIFF, MIDI, ISO 9660, TrueType/OpenType, RTF
+# --------------------------------------------------------------------------
+
+def _psd_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    h = src.at(off, 26)
+    if len(h) < 26 or h[:4] != b"8BPS":
+        return None
+    ver, channels, height, width, depth, mode = struct.unpack(">H6xHIIHH", h[4:26])
+    if ver not in (1, 2) or not 1 <= channels <= 56 or not 0 < height <= 300000 or not 0 < width <= 300000 \
+            or depth not in (1, 8, 16, 32) or mode > 9:
+        return None
+    pos = off + 26
+    for _ in range(2):                                 # colour mode data, image resources
+        pos += 4 + _u32be(src, pos)
+    pos += (8 + _u64be(src, pos)) if ver == 2 else (4 + _u32be(src, pos))   # layers and masks
+    comp = _u16be(src, pos)
+    pos += 2
+    rows = channels * height
+    if comp == 0:
+        pos += rows * ((width * depth + 7) // 8)
+    elif comp == 1:
+        width_b = 4 if ver == 2 else 2
+        counts = src.at(pos, rows * width_b)
+        if len(counts) < rows * width_b:
+            return None
+        pos += len(counts) + sum(struct.unpack(">" + ("I" if ver == 2 else "H") * rows, counts))
+    else:
+        end = _until_blank(src, pos, limit, 2048 * MIB)
+        return Extent(end - off, Verdict.SUSPECT, ["compressed image data, sized to the data"], False)
+    if pos - off > 4096 * MIB:
+        return None
+    if pos > src.size:
+        return Extent(src.size - off, Verdict.PARTIAL, ["runs past the data"], False)
+    return Extent(pos - off, Verdict.VALID, [f"{width}x{height}, {channels} channels, sections line up"])
+
+
+def _aiff_quick(buf: bytes, i: int) -> bool:
+    return not _have(buf, i, 12) or buf[i + 8:i + 12] in (b"AIFF", b"AIFC")
+
+
+def _aiff_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    head = src.at(off, 12)
+    if len(head) < 12 or head[:4] != b"FORM" or head[8:12] not in (b"AIFF", b"AIFC"):
+        return None
+    size = _u32be(src, off + 4) + 8
+    if size < 20:
+        return None
+    if off + size > src.size:
+        return Extent(src.size - off, Verdict.PARTIAL, ["FORM size exceeds data"], False)
+    return Extent(size, Verdict.VALID, ["FORM size field"])
+
+
+def _midi_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    if src.at(off, 8) != b"MThd\x00\x00\x00\x06":
+        return None
+    pos = off + 14
+    tracks = 0
+    while src.at(pos, 4) == b"MTrk":
+        pos += 8 + _u32be(src, pos + 4)
+        tracks += 1
+        if tracks > 4096:
+            return None
+    if tracks == 0 or pos > src.size:
+        return None
+    return Extent(pos - off, Verdict.VALID, [f"{tracks} tracks"])
+
+
+def _iso9660_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    pvd = src.at(off + 0x8000, 0x90)
+    if len(pvd) < 0x90 or pvd[0] != 1 or pvd[1:6] != b"CD001":
+        return None
+    blocks = struct.unpack_from("<I", pvd, 0x50)[0]
+    block = struct.unpack_from("<H", pvd, 0x80)[0]
+    if struct.unpack_from(">I", pvd, 0x54)[0] != blocks or block not in (512, 1024, 2048, 4096):
+        return None
+    size = blocks * block
+    if size <= 0x8800 or size > 64 * 1024 * MIB:
+        return None
+    if off + size > src.size:
+        return Extent(src.size - off, Verdict.PARTIAL, ["volume size exceeds data"], False)
+    return Extent(size, Verdict.VALID, ["primary volume descriptor size"])
+
+
+def _sfnt_quick(buf: bytes, i: int) -> bool:
+    if not _have(buf, i, 28):
+        return True
+    n = int.from_bytes(buf[i + 4:i + 6], "big")
+    if not 4 <= n <= 64:
+        return False
+    search = 16 << (n.bit_length() - 1)
+    return int.from_bytes(buf[i + 6:i + 8], "big") == search and all(32 <= c < 127 for c in buf[i + 12:i + 16])
+
+
+def _sfnt_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    head = src.at(off, 12)
+    if len(head) < 12 or head[:4] not in (b"\x00\x01\x00\x00", b"OTTO"):
+        return None
+    n = struct.unpack(">H", head[4:6])[0]
+    if not 4 <= n <= 64:
+        return None
+    table = src.at(off + 12, n * 16)
+    if len(table) < n * 16:
+        return None
+    end = 12 + n * 16
+    names = set()
+    for k in range(n):
+        tag, _chk, t_off, t_len = struct.unpack(">4sIII", table[k * 16:(k + 1) * 16])
+        if not all(32 <= c < 127 for c in tag) or t_off > 64 * MIB or t_len > 64 * MIB:
+            return None
+        names.add(tag)
+        end = max(end, (t_off + t_len + 3) & ~3)
+    if b"head" not in names or b"cmap" not in names:
+        return None
+    if off + end > src.size:
+        return Extent(src.size - off, Verdict.PARTIAL, ["tables run past the data"], False)
+    return Extent(end, Verdict.VALID, [f"{n} font tables"], ext="otf" if head[:4] == b"OTTO" else "ttf")
+
+
+def _rtf_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
+    stop = min(limit, src.size, off + 64 * MIB)
+    pos = off
+    text = b""
+    while pos < stop:
+        part = src.at(pos, min(1 * MIB, stop - pos))
+        if not part:
+            break
+        nul = part.find(b"\x00")
+        text += part if nul < 0 else part[:nul]
+        pos += len(part)
+        if nul >= 0:
+            break
+    close = text.rfind(b"}")
+    if close < 6:
+        return None
+    end = close + 1
+    while end < len(text) and text[end] in b"\r\n":
+        end += 1
+    return Extent(end, Verdict.VALID if text.count(b"{") == text.count(b"}") else Verdict.SUSPECT,
+                  ["ends at its last closing brace"])
+
+
+# --------------------------------------------------------------------------
+# ZIP named by what is inside (Office, OpenDocument, EPUB, JAR, APK)
+# --------------------------------------------------------------------------
+
+_ODF = {b"application/vnd.oasis.opendocument.text": "odt",
+        b"application/vnd.oasis.opendocument.spreadsheet": "ods",
+        b"application/vnd.oasis.opendocument.presentation": "odp",
+        b"application/epub+zip": "epub"}
+
+
+def _zip_kind(src: ByteSource, off: int, size: int) -> str | None:
+    head = src.at(off, min(size, 256 * KIB))
+    tail = src.at(off + max(0, size - 256 * KIB), min(size, 256 * KIB))
+    names = head + tail
+    if head[30:38] == b"mimetype":
+        for mime, ext in _ODF.items():
+            if mime in head[:200]:
+                return ext
+    for needle, ext in ((b"word/document.xml", "docx"), (b"xl/workbook", "xlsx"),
+                        (b"ppt/presentation.xml", "pptx"), (b"visio/document.xml", "vsdx"),
+                        (b"AndroidManifest.xml", "apk"), (b"META-INF/MANIFEST.MF", "jar")):
+        if needle in names:
+            return ext
+    return None
+
+
+def _zip_resolve(src: ByteSource, off: int, limit: int) -> Extent | None:
+    extent = _zip_walk(src, off, limit) or _zip_by_eocd(src, off, limit)
+    if extent is not None:
+        kind = _zip_kind(src, off, extent.size)
+        if kind:
+            extent.ext = kind
+            extent.notes.append(f"contents say .{kind}")
+    return extent
+
+
 FORMATS: tuple[Format, ...] = (
     Format("jpeg", "jpg", (b"\xff\xd8\xff",), 64 * MIB, b"\xff\xd9",
            _jpeg_walk, _jpeg_validate, "image", 0.9, quick=_jpeg_quick),
@@ -1210,8 +1681,9 @@ FORMATS: tuple[Format, ...] = (
            _bmp_walk, None, "image", 0.75, quick=_bmp_quick),
     Format("ico", "ico", (b"\x00\x00\x01\x00",), 8 * MIB, None,
            _ico_walk, None, "image", 0.6, quick=_ico_quick),
-    Format("tiff", "tif", (b"II\x2a\x00", b"MM\x00\x2a"), 128 * MIB, None,
-           _tiff_walk, None, "image", 0.6, quick=_tiff_quick),
+    Format("tiff", "tif", (b"II\x2a\x00", b"MM\x00\x2a", b"IIRO", b"IIRS", b"IIU\x00"), 512 * MIB, None,
+           _tiff_walk, None, "image", 0.8, quick=_tiff_quick),
+    Format("raf", "raf", (b"FUJIFILMCCD-RAW ",), 512 * MIB, None, _raf_walk, None, "image", 0.85),
     Format("webp", "webp", (b"RIFF",), 64 * MIB, None,
            lambda s, o, l: _riff_walk(s, o, l) if s.at(o + 8, 4) == b"WEBP" else None,
            _riff_validate, "image", 0.85),
@@ -1221,14 +1693,23 @@ FORMATS: tuple[Format, ...] = (
     Format("avi", "avi", (b"RIFF",), 2 * 1024 * MIB, None,
            lambda s, o, l: _riff_walk(s, o, l) if s.at(o + 8, 4) == b"AVI " else None,
            _riff_validate, "video", 0.85),
-    Format("mp4", "mp4", (b"ftyp",), 4 * 1024 * MIB, None,
-           _iso_resolver(ISO_BRANDS["mp4"]), None, "video", 0.85, back=4, quick=_ftyp_quick),
-    Format("mov", "mov", (b"ftyp",), 4 * 1024 * MIB, None,
-           _iso_resolver(ISO_BRANDS["mov"]), None, "video", 0.8, back=4, quick=_ftyp_quick),
-    Format("heic", "heic", (b"ftyp",), 512 * MIB, None,
-           _iso_resolver(ISO_BRANDS["heic"]), None, "image", 0.85, back=4, quick=_ftyp_quick),
+    Format("mp4", "mp4", (b"ftyp",), 16 * 1024 * MIB, None,
+           _iso_any, None, "video", 0.85, back=4, quick=_ftyp_quick),
+    Format("mkv", "mkv", (b"\x1a\x45\xdf\xa3",), 64 * 1024 * MIB, None, _mkv_walk, None, "video", 0.85),
+    Format("asf", "wmv", (_ASF_HEADER[:8],), 64 * 1024 * MIB, None, _asf_walk, None, "video", 0.85),
+    Format("flv", "flv", (b"FLV\x01",), 8 * 1024 * MIB, None, _flv_walk, None, "video", 0.8),
+    Format("m2ts", "m2ts", (_TS_MAGIC,), 64 * 1024 * MIB, None, _M2TS_WALK, None, "video", 0.75,
+           back=4, quick=_M2TS_QUICK),
+    Format("ts", "ts", (_TS_MAGIC,), 64 * 1024 * MIB, None, _TS_WALK, None, "video", 0.75, quick=_TS_QUICK),
+    Format("psd", "psd", (b"8BPS",), 4 * 1024 * MIB, None, _psd_walk, None, "image", 0.85),
+    Format("aiff", "aiff", (b"FORM",), 2 * 1024 * MIB, None, _aiff_walk, None, "audio", 0.8, quick=_aiff_quick),
+    Format("midi", "mid", (b"MThd\x00\x00\x00\x06",), 64 * MIB, None, _midi_walk, None, "audio", 0.8),
+    Format("iso", "iso", (b"CD001",), 64 * 1024 * MIB, None, _iso9660_walk, None, "archive", 0.85, back=0x8001),
+    Format("sfnt", "ttf", (b"\x00\x01\x00\x00", b"OTTO"), 64 * MIB, None, _sfnt_walk, None, "other", 0.75,
+           quick=_sfnt_quick),
+    Format("rtf", "rtf", (b"{\\rtf1",), 64 * MIB, None, _rtf_walk, None, "document", 0.75),
     Format("zip", "zip", (b"PK\x03\x04",), 2048 * MIB, b"PK\x05\x06",
-           lambda s, o, l: _zip_walk(s, o, l) or _zip_by_eocd(s, o, l), _zip_validate, "archive", 0.85),
+           _zip_resolve, _zip_validate, "archive", 0.85),
     Format("pdf", "pdf", (b"%PDF-",), 512 * MIB, b"%%EOF",
            _pdf_walk, None, "document", 0.8),
     Format("sqlite", "sqlite", (b"SQLite format 3\x00",), 4096 * MIB, None,

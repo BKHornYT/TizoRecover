@@ -282,8 +282,12 @@ def recover_exfat(
     max_depth: int = 32,
     progress: Callable[[int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    include_live: bool = False,
 ) -> Iterator[FileCandidate]:
-    """Walk the whole tree (live and deleted folders) and yield every deleted file."""
+    """Walk the whole tree (live and deleted folders) and yield every deleted file.
+
+    ``include_live`` also yields files that were not deleted (lost volumes).
+    """
     info = find_exfat(src)
     if info is None:
         return
@@ -292,7 +296,7 @@ def recover_exfat(
     root = read_directory(src, info, fat, info.root_cluster, None, False)
     seen = {info.root_cluster}
     yield from _walk(src, info, fat, bitmap, root, "", False, 0, max_depth, volume, progress,
-                     should_stop, seen)
+                     should_stop, seen, include_live)
 
 
 def _in_use(bitmap: bytes, cluster: int) -> bool:
@@ -316,7 +320,8 @@ def free_run_guess(info: ExfatInfo, bitmap: bytes, first: int, need: int) -> lis
 
 
 def _walk(src, info: ExfatInfo, fat: Fat, bitmap: bytes, raw: bytes, prefix: str, in_deleted: bool, depth: int,
-          max_depth: int, volume: str, progress, should_stop, seen: set[int]) -> Iterator[FileCandidate]:
+          max_depth: int, volume: str, progress, should_stop, seen: set[int],
+          include_live: bool = False) -> Iterator[FileCandidate]:
     if depth > max_depth:
         return
     if progress is not None:
@@ -332,9 +337,9 @@ def _walk(src, info: ExfatInfo, fat: Fat, bitmap: bytes, raw: bytes, prefix: str
             seen.add(es.first_cluster)
             sub = read_directory(src, info, fat, es.first_cluster, es.size, es.contiguous)
             yield from _walk(src, info, fat, bitmap, sub, path, in_deleted or es.deleted, depth + 1,
-                             max_depth, volume, progress, should_stop, seen)
+                             max_depth, volume, progress, should_stop, seen, include_live)
             continue
-        if not (es.deleted or in_deleted) or es.size == 0 or not info.valid_cluster(es.first_cluster):
+        if not (es.deleted or in_deleted or include_live) or es.size == 0 or not info.valid_cluster(es.first_cluster):
             continue
         need = _clusters_for(info, es.size)
         guessed = False
@@ -354,7 +359,8 @@ def _walk(src, info: ExfatInfo, fat: Fat, bitmap: bytes, raw: bytes, prefix: str
             chain = [c for c in chain if info.valid_cluster(c)]
         size = min(es.size, len(chain) * info.cluster_size)
         extents = runs_of(info, chain, size)
-        reasons = ["entry set marked deleted" if es.deleted else "inside a deleted folder", how]
+        reasons = ["entry set marked deleted" if es.deleted else "inside a deleted folder" if in_deleted
+                   else "in use when this volume was lost", how]
         if es.checksum_ok:
             reasons.append("entry set checksum matches")
         yield FileCandidate(

@@ -575,8 +575,12 @@ def recover_ntfs(
     should_stop: Callable[[], bool] | None = None,
     max_entries: int | None = None,
     read_data: bool = False,
+    include_live: bool = False,
 ) -> Iterator[FileCandidate]:
     """Walk the $MFT and yield every deleted file still described in it.
+
+    ``include_live`` also yields files that were still in use: on a lost or
+    formatted-over volume every file it held is one the user wants back.
 
     Candidates carry ``metadata["extents"]`` -- where the bytes sit on the
     volume -- rather than the bytes themselves, so a scan over a disk full of
@@ -618,7 +622,7 @@ def recover_ntfs(
         if entry.is_dir:
             dirs[entry.index] = (parent_index, name, entry.in_use)
             continue
-        if entry.in_use:
+        if entry.in_use and not include_live:
             continue
         data = entry.first(ATTR_DATA)
         if data is None:
@@ -667,7 +671,8 @@ def recover_ntfs(
             verdict=Verdict.PARTIAL if data.compressed else Verdict.VALID,
             confidence=0.9 if data.resident else 0.85,
             reasons=[
-                f"MFT record {index} not in use (sequence {entry.sequence})",
+                f"MFT record {index} in use when this volume was lost" if entry.in_use
+                else f"MFT record {index} not in use (sequence {entry.sequence})",
                 "resident data in the record itself" if data.resident
                 else f"{len(data.runs)} data run(s) in the record",
             ],
