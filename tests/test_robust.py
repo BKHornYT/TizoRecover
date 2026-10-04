@@ -147,6 +147,40 @@ def test_bad_sectors_and_vanishing_drive():
     check("bad ranges recorded", drive.bad_ranges == bad, str(drive.bad_ranges))
     drive.close()
 
+    # A damaged area where every read times out (a sick drive): it must be skipped in a few tries,
+    # not retried sector by sector (8 MB / 4 KB = 2048 reads of 15 s each = 8.5 hours).
+    big = bytes(range(256)) * (4 << 15)                 # 32 MiB
+    with open(fh.name, "wb") as out:
+        out.write(big)
+
+    class Slow(FlakyDrive):
+        slow_calls = 0
+
+        def _read_raw(self, offset, length):
+            self.calls += 1
+            if offset < (12 << 20) and offset + length > (4 << 20):
+                self.slow_calls += 1
+                raise OSError(1460, "the drive did not answer within 15 s")
+            return DeviceBlockReader._read_raw(self, offset, length)
+
+    slow = Slow(fh.name, [])
+    got = b"".join(slow.read(o, 8 << 20) for o in range(0, 32 << 20, 8 << 20))
+    check("slow area: every byte still returned", len(got) == len(big), str(len(got)))
+    check("slow area: few slow reads (each would cost 15 s)", slow.slow_calls <= 12, f"{slow.slow_calls} slow reads")
+    check("slow area: counted as unreadable", slow.bad_bytes >= (8 << 20) - (128 << 10), str(slow.bad_bytes))
+    check("slow area: data before it intact", got[:4 << 20] == big[:4 << 20])
+    check("slow area: data after it intact", got[16 << 20:] == big[16 << 20:])
+    slow.close()
+
+    stopper = Slow(fh.name, [])
+    stopper.interrupt()
+    stopper.calls = 0
+    stopper.read(0, 8 << 20)
+    check("Stop: no more retries once interrupted", stopper.calls <= 2, f"{stopper.calls} reads")
+    stopper.resume()
+    check("after Stop, reads work again", stopper.read(0, 4096) == big[:4096])
+    stopper.close()
+
     if os.name == "nt":
         gone_err = OSError(0, "gone")
         gone_err.winerror = 1167                          # ERROR_DEVICE_NOT_CONNECTED
@@ -167,7 +201,27 @@ def test_bad_sectors_and_vanishing_drive():
     os.unlink(fh.name)
 
 
+def test_stop_stops():
+    print("stop really stops")
+    import time
+    fh = tempfile.NamedTemporaryFile(suffix=".img", delete=False)
+    rng = random.Random(3)
+    fh.write(bytes(rng.getrandbits(8) for _ in range(1 << 20)) * 96)     # 96 MiB of noise: a long deep scan
+    fh.close()
+    job = ScanJob(image_drive(fh.name), DEEP).start()
+    time.sleep(0.8)
+    t = time.time()
+    job.stop()
+    job.wait(10)
+    took = time.time() - t
+    check("deep scan stops within 2 s", job.state == "stopped" and took < 2, f"{job.state} after {took:.2f} s")
+    check("a stopped scan can still read its drive", job.src is not None and len(job.src.at(0, 512)) == 512)
+    job.close()
+    os.unlink(fh.name)
+
+
 def main() -> int:
+    test_stop_stops()
     test_bad_sectors_and_vanishing_drive()
     test_damaged_file_systems()
     print()

@@ -31,6 +31,9 @@ _GONE_WINERRORS = {6, 21, 55, 433, 1110, 1167}   # invalid handle, not ready, ne
 _GONE_ERRNOS = {6, 19, 123}                      # ENXIO, ENODEV, ENOMEDIUM
 _SKIP_STEP = 64 * 1024                           # retry a failed read in pieces this size...
 _SKIP_SMALL = 4096                               # ...then the failing piece in these
+_SKIP_AFTER = 3                                  # failing pieces in a row = a damaged area: skip ahead
+_JUMP_MIN = 256 * 1024                           # first jump over a damaged area, doubling...
+_JUMP_MAX = 4 * 1024 * 1024                      # ...up to this, with a probe read between jumps
 MAX_BAD_RANGES = 200
 
 
@@ -137,6 +140,10 @@ _ERROR_OPERATION_ABORTED = 995
 _ERROR_IO_PENDING = 997
 _WAIT_OBJECT_0 = 0
 _INFINITE = 0xFFFFFFFF
+_WAIT_TIMEOUT = 0x102
+_ERROR_TIMEOUT = 1460
+READ_TIMEOUT_MS = 15000      # a sick drive can sit on one read for minutes; give up and skip it
+CANCEL_WAIT_MS = 10000
 
 # A volume handle only accepts reads that are a whole number of sectors.
 _SECTOR = 512
@@ -351,7 +358,10 @@ class WindowsVolume:
         kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         kernel32.WaitForSingleObject.restype = wintypes.DWORD
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CancelIoEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+        kernel32.CancelIoEx.restype = wintypes.BOOL
         self._k32 = kernel32
+        self._hung = False
         self._dword = wintypes.DWORD
         self._byref = ctypes.byref
         self._last_error = ctypes.get_last_error
@@ -425,7 +435,18 @@ class WindowsVolume:
                 code = self._last_error()
                 if not queued and code != _ERROR_IO_PENDING:
                     raise OSError(code, _winerror_text(code), self.path)
-                waited = self._k32.WaitForSingleObject(self._event, _INFINITE)
+                if self._hung:
+                    raise DriveGoneError(_ERROR_TIMEOUT, "the drive stopped answering", self.path)
+                waited = self._k32.WaitForSingleObject(self._event, READ_TIMEOUT_MS)
+                if waited == _WAIT_TIMEOUT:
+                    # The drive is sitting on this read. Cancel it and call the spot unreadable;
+                    # if even the cancel never lands, the drive has hung and nothing more will come.
+                    self._k32.CancelIoEx(self._handle, self._byref(overlapped))
+                    if self._k32.WaitForSingleObject(self._event, CANCEL_WAIT_MS) != _WAIT_OBJECT_0:
+                        self._hung = True
+                        raise DriveGoneError(_ERROR_TIMEOUT, "the drive stopped answering", self.path)
+                    raise OSError(_ERROR_TIMEOUT, f"the drive did not answer within {READ_TIMEOUT_MS // 1000} s",
+                                  self.path)
                 if waited != _WAIT_OBJECT_0:
                     raise OSError(code, f"raw read did not finish (wait={waited})",
                                   self.path)
@@ -441,6 +462,13 @@ class WindowsVolume:
                     break
                 out += self._buffer.raw[:transferred.value]
         return bytes(out)
+
+    def cancel(self) -> None:
+        """Cancel whatever read is pending on this handle (from any thread)."""
+        try:
+            self._k32.CancelIoEx(self._handle, None)
+        except Exception:  # noqa: BLE001
+            pass
 
     def size(self) -> int:
         return _windows_volume_size(self._handle, self.path)
@@ -480,6 +508,7 @@ class DeviceBlockReader(BlockReader):
         self.size_known = size > 0
         self.bad_bytes = 0
         self.bad_ranges: list[tuple[int, int]] = []
+        self._interrupted = False
         super().__init__(size or UNKNOWN_SIZE_CAP, label or path)
 
     def read(self, offset: int, length: int) -> bytes:
@@ -491,6 +520,8 @@ class DeviceBlockReader(BlockReader):
         in ``bad_bytes`` / ``bad_ranges``. A drive that is gone altogether
         raises :class:`DriveGoneError` instead of reading as endless zeros.
         """
+        if self._interrupted:            # Stop was pressed: don't touch a drive that may hang
+            return b""
         try:
             return self._read_raw(offset, length)
         except OSError as exc:
@@ -499,31 +530,83 @@ class DeviceBlockReader(BlockReader):
             return self._read_around(offset, length)
 
     def _read_around(self, offset: int, length: int) -> bytes:
+        """Read a request that failed, piece by piece, without getting stuck in a damaged area.
+
+        Like ddrescue: one bad 64 KB piece is narrowed down to 4 KB; but a piece that timed
+        out, or several failing pieces in a row, mean a damaged area, and the rest of the
+        request is skipped (blanked, counted) instead of being tried sector by sector -- on
+        a sick drive every failed read can take seconds.
+        """
         out = bytearray()
         pos, end = offset, offset + length
+        fails = 0
+        jump = _JUMP_MIN
         while pos < end:
+            if self._interrupted:                 # Stop pressed: hand back blanks, count nothing
+                out += b"\x00" * (end - pos)
+                break
+            if fails >= _SKIP_AFTER:
+                # A damaged area: jump over a growing stretch, then probe one piece again.
+                n = min(jump, end - pos)
+                self._mark_bad(pos, n)
+                out += b"\x00" * n
+                pos += n
+                jump = min(jump * 2, _JUMP_MAX)
+                fails = _SKIP_AFTER - 1
+                continue
             n = min(_SKIP_STEP, end - pos)
-            out += self._read_piece(pos, n, small=False)
+            data, ok, slow = self._read_piece(pos, n, narrow=fails == 0)
+            out += data
             pos += n
+            if ok:
+                fails, jump = 0, _JUMP_MIN
+            else:
+                fails += _SKIP_AFTER if slow else 1
         return bytes(out)
 
-    def _read_piece(self, pos: int, n: int, small: bool) -> bytes:
+    def interrupt(self) -> None:
+        """Stop pressed: cancel the read the drive is sitting on and stop retrying."""
+        self._interrupted = True
+        if self._volume is not None:
+            self._volume.cancel()
+
+    def resume(self) -> None:
+        """The scan has ended; reads for previews and recovery work normally again."""
+        self._interrupted = False
+
+    def _mark_bad(self, pos: int, n: int) -> None:
+        self.bad_bytes += n
+        if self.bad_ranges and self.bad_ranges[-1][1] == pos:
+            self.bad_ranges[-1] = (self.bad_ranges[-1][0], pos + n)
+        elif len(self.bad_ranges) < MAX_BAD_RANGES:
+            self.bad_ranges.append((pos, pos + n))
+
+    def _read_piece(self, pos: int, n: int, narrow: bool) -> tuple[bytes, bool, bool]:
+        """(bytes, read fine, failed slowly)."""
         try:
             data = self._read_raw(pos, n)
-            return data + b"\x00" * (n - len(data)) if len(data) < n and pos + n <= self.size else data
+            if len(data) < n and pos + n <= self.size:
+                data += b"\x00" * (n - len(data))
+            return data, True, False
         except OSError as exc:
             if _is_gone(exc):
                 raise DriveGoneError(exc.errno or 0, f"the drive stopped answering ({exc})", self.path) from exc
-            if not small and n > _SKIP_SMALL:
-                return b"".join(self._read_piece(p, min(_SKIP_SMALL, pos + n - p), small=True)
-                                for p in range(pos, pos + n, _SKIP_SMALL))
-            self.bad_bytes += n
-            if len(self.bad_ranges) < MAX_BAD_RANGES:
-                if self.bad_ranges and self.bad_ranges[-1][1] == pos:
-                    self.bad_ranges[-1] = (self.bad_ranges[-1][0], pos + n)
-                else:
-                    self.bad_ranges.append((pos, pos + n))
-            return b"\x00" * n
+            slow = (getattr(exc, "errno", 0) == _ERROR_TIMEOUT)
+            if narrow and not slow and n > _SKIP_SMALL:
+                parts, any_ok = [], False
+                for p in range(pos, pos + n, _SKIP_SMALL):
+                    piece, ok, slow_small = self._read_piece(p, min(_SKIP_SMALL, pos + n - p), narrow=False)
+                    parts.append(piece)
+                    any_ok = any_ok or ok
+                    if slow_small:            # the area went slow: blank the rest of the piece
+                        rest = pos + n - (p + _SKIP_SMALL)
+                        if rest > 0:
+                            self._mark_bad(p + _SKIP_SMALL, rest)
+                            parts.append(b"\x00" * rest)
+                        return b"".join(parts), any_ok, True
+                return b"".join(parts), any_ok, False
+            self._mark_bad(pos, n)
+            return b"\x00" * n, False, slow
 
     def _read_raw(self, offset: int, length: int) -> bytes:
         """Read at an offset, seeking by hand where ``os.pread`` is missing.

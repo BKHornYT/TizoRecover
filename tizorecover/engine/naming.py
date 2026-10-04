@@ -8,7 +8,7 @@ creation time, a PDF or Office document its title. That turns
 and gives the file a date, so "newest first" means something for carved files.
 
 Every reader here works on a ``read(offset, length) -> bytes`` function over the
-carved file, reads little (the first 128 KB, a few box headers, or a small
+carved file, reads little (the first 64 KB, a few box headers, or a small
 Office file whole), and returns nothing rather than raising on a damaged file.
 """
 
@@ -21,7 +21,7 @@ import struct
 import zipfile
 from typing import Callable
 
-HEAD = 128 << 10
+HEAD = 64 << 10        # EXIF (APP1) and ID3 text frames sit in the first 64 KB
 OFFICE_MAX = 16 << 20
 MAX_NAME = 90
 Reader = Callable[[int, int], bytes]
@@ -150,6 +150,17 @@ def _photo(tags: dict) -> tuple[str | None, float | None]:
 
 # ------------------------------------------------------------------ ISO BMFF (MP4 / MOV / M4A)
 
+def _ilst(moov: bytes, key: bytes) -> str | None:
+    """An iTunes-style tag (title, artist) from a moov box."""
+    j = moov.find(key)
+    if j < 4 or moov[j + 8:j + 12] != b"data":
+        return None
+    n = struct.unpack_from(">I", moov, j + 4)[0]
+    if not 16 < n < 4096:
+        return None
+    return _clean(moov[j + 20:j + 4 + n].decode("utf-8", "replace")) or None
+
+
 def _bmff(read: Reader, size: int, kind: str) -> tuple[str | None, float | None]:
     pos, steps = 0, 0
     while pos + 8 <= size and steps < 64:
@@ -174,11 +185,10 @@ def _bmff(read: Reader, size: int, kind: str) -> tuple[str | None, float | None]
                 created = struct.unpack_from(">Q", moov, i + 8)[0] if ver == 1 else struct.unpack_from(">I", moov, i + 8)[0]
             except struct.error:
                 break
-            title = None
-            j = moov.find(b"\xa9nam")
-            if j > 0 and moov[j + 8:j + 12] == b"data":
-                n = struct.unpack_from(">I", moov, j + 4)[0]
-                title = _clean(moov[j + 20:j + 4 + n].decode("utf-8", "replace"))
+            title = _ilst(moov, b"\xa9nam")
+            artist = _ilst(moov, b"\xa9ART")
+            if title and artist:
+                title = f"{artist} - {title}"
             ts = created - 2082844800 if created > 2082844800 else None
             if ts is not None and not (315532800 <= ts <= 4102444800):
                 ts = None
@@ -265,9 +275,18 @@ def _pdf(read: Reader, size: int) -> tuple[str | None, float | None]:
         if m and ts is None:
             ts = _stamp(*[int(g) if g else 0 for g in m.groups()])
     title = _clean(title)
-    if title.lower() in ("untitled", "microsoft word - document1", "") or len(title) < 3:
+    if _junk_title(title):
         return None, ts
     return re.sub(r"^Microsoft (Word|PowerPoint|Excel) - ", "", title), ts
+
+
+JUNK_TITLES = {"untitled", "about blank", "about:blank", "document", "document1", "presentation", "powerpoint presentation",
+               "slide 1", "title", "new document", "print", "pdf", "doc"}
+
+
+def _junk_title(title: str) -> bool:
+    t = title.strip().lower()
+    return len(t) < 3 or t in JUNK_TITLES or t.startswith(("microsoft word - document", "untitled"))
 
 
 def _office(read: Reader, size: int, ext: str) -> tuple[str | None, float | None]:
@@ -281,6 +300,8 @@ def _office(read: Reader, size: int, ext: str) -> tuple[str | None, float | None
         return None, None
     m = re.search(r"<dc:title>([^<]{1,300})</dc:title>", xml)
     title = _clean(m.group(1)) if m else ""
+    if _junk_title(title):
+        title = ""
     m = re.search(r"<(?:dcterms:modified|dc:date)[^>]*>(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)", xml)
     ts = _stamp(*map(int, m.groups())) if m else None
     if title:

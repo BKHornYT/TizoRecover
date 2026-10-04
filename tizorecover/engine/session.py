@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from tizorecover.engine import allocation as alloc_mod
+from tizorecover.engine import naming
 from tizorecover.engine import tzscan
 from tizorecover.engine import verify
 from tizorecover.engine.access import CandidateData, pieces_of
@@ -168,7 +169,11 @@ class ScanJob:
         return self
 
     def stop(self) -> None:
+        """Stop now, even when the drive is sitting on a read: that read is cancelled."""
         self._stop.set()
+        dev = self._device()
+        if dev is not None and hasattr(dev, "interrupt"):
+            dev.interrupt()
 
     def wait(self, timeout: float | None = None) -> None:
         self.thread.join(timeout)
@@ -203,14 +208,18 @@ class ScanJob:
                 "resumed_from": self.resumed_from, "bad_bytes": self.bad_bytes(),
                 "drive_gone": self.drive_gone}
 
-    def bad_bytes(self) -> int:
-        """Bytes the drive could not read (bad sectors), skipped and read as blank."""
+    def _device(self):
+        """The raw device reader under any partition window or boot patch, if there is one."""
         r = self.reader
         for _ in range(6):
             if r is None or hasattr(r, "bad_bytes"):
-                break
+                return r
             r = getattr(r, "parent", None)
-        return int(getattr(r, "bad_bytes", 0) or 0)
+        return None
+
+    def bad_bytes(self) -> int:
+        """Bytes the drive could not read (bad sectors), skipped and read as blank."""
+        return int(getattr(self._device(), "bad_bytes", 0) or 0)
 
     def save(self, path: str | None = None) -> str | None:
         """Write this scan to ``path`` (default: its automatic save file)."""
@@ -255,6 +264,21 @@ class ScanJob:
                 pass
             self.reader = None
 
+    def _name_from_content(self, candidate: FileCandidate) -> None:
+        """A carved file named by what it says about itself (EXIF date + camera, ID3, title...)."""
+        data = CandidateData(candidate, self.src)
+        try:
+            name, ts = naming.describe(data.at, candidate.size, candidate.ext)
+        except DriveGoneError:
+            raise
+        except Exception:  # noqa: BLE001 - a name is a bonus, never a reason to lose the file
+            return
+        if name:
+            candidate.name = f"{name}.{(candidate.ext or 'bin').lower()}"
+            candidate.metadata["named_from"] = "content"
+        if ts and not candidate.metadata.get("modified"):
+            candidate.metadata["modified"] = ts
+
     def _stage(self, name: str, total: int) -> None:
         self.progress.stage = name
         self.progress.done = 0
@@ -278,6 +302,8 @@ class ScanJob:
             status, notes = verify.assess(candidate, self.src, self.allocation)
         except (OSError, ValueError) as exc:
             status, notes = verify.PARTIAL, [f"could not check: {exc}"]
+        if candidate.strategy is Strategy.CARVE and not candidate.original_path:
+            self._name_from_content(candidate)
         with self._lock:
             item = Item(len(self.items), candidate, status, notes,
                         verify.category_of(candidate.ext))
@@ -361,6 +387,9 @@ class ScanJob:
             logging.getLogger("tizorecover").exception("scan of %s failed", self.drive.path)
             self.problems.append(f"scan failed: {exc!r}")
             self.state = "failed"
+        dev = self._device()
+        if dev is not None and hasattr(dev, "resume"):
+            dev.resume()                      # previews and recovery read normally again
         if self.autosave and self.items and (self.state in ("done", "stopped") or self.drive_gone):
             self.save()
         bad = self.bad_bytes()
