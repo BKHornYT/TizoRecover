@@ -45,12 +45,14 @@ def test_deleted_from_journal() -> list[str]:
     job.wait(60)
     failures += _check("detected", job.filesystem.startswith("ext"), job.filesystem)
     failures += _check("free space read from the block bitmaps", job.free_bytes > 0, str(job.free_bytes))
-    by = {it.candidate.original_path: it for it in job.items}
+    every = {it.candidate.original_path: it for it in job.items}
+    by = {p: it for p, it in every.items() if not it.to_dict()["existing"]}
     for rel, digest in want.items():
         it = by.get(rel)
         same = it is not None and hashlib.sha256(job.data(it).read_all()).hexdigest() == digest
         failures += _check(f"{rel}", same, it.status if it else "missing")
-    failures += _check("only deleted files listed", set(by) == set(want), str(sorted(set(by) - set(want))))
+    failures += _check("only deleted files listed as deleted", set(by) == set(want), str(sorted(set(by) - set(want))))
+    failures += _check("live files listed as Existing", "home/user/notes.txt" in every and every["home/user/notes.txt"].to_dict()["existing"])
     frag = by.get("home/user/frag.bin")
     failures += _check("fragmented file mapped in pieces", frag is not None and frag.candidate.fragment_count > 1)
     plan = by.get("home/user/Old/plan.txt")

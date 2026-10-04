@@ -668,6 +668,7 @@ def recover_ntfs(
             "cluster_size": boot.cluster_size,
             "modified": _modified_time(entry),
             "folder_deleted": folder_deleted,
+            "live": entry.in_use,
         }
         if data.resident:
             payload = data.value

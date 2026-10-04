@@ -119,6 +119,7 @@
   <section class="screen" id="screen-scan" hidden>
     <div class="topbar">
       <button class="icon-btn" data-goto="devices" title="Storage devices"><span data-icon="home"></span></button>
+      <button class="icon-btn" id="sc-pause" title="Pause"><span data-icon="pause"></span></button>
       <button class="icon-btn" id="sc-stop" title="Stop scan"><span data-icon="stop"></span></button>
       <div class="grow"></div>
       <button class="btn" id="sc-recover">Recover all…</button>
@@ -147,7 +148,8 @@
     <header class="rv-head2">
       <div class="rv-top">
         <button class="icon-btn home-btn" data-goto="devices" title="Storage devices"><span data-icon="home"></span></button>
-        <button class="scan-pill" id="rv-scanpill" hidden><span class="pill-bar"><span id="rv-pillbar"></span></span><span id="rv-pilltext"></span></button>
+        <button class="icon-btn" id="rv-pause" title="Pause" hidden><span data-icon="pause"></span></button>
+        <button class="tb-scan" id="rv-scanpill" data-goto="scan" hidden><b id="rv-pilltext"></b><small id="rv-pillsub"></small><span class="pill-bar"><span id="rv-pillbar"></span></span></button>
         <div class="grow"></div>
         <div class="seg" id="view-seg">
           <button data-view="tree" class="active" title="List"><span data-icon="list"></span></button>

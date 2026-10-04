@@ -856,3 +856,18 @@ body { font-size: 14px; }
   .thead, .row { grid-template-columns: 40px minmax(150px, 1fr) 110px 78px; }
   .thead > :nth-child(4), .row > :nth-child(4), .thead > :nth-child(5), .row > :nth-child(5) { display: none; }
 }
+
+/* review top bar: the scan's name and status */
+.tb-scan { display: grid; grid-template-columns: auto; text-align: left; border: 0; background: none; color: var(--text); cursor: pointer; padding: 2px 8px; border-radius: 5px; position: relative; max-width: 380px; }
+.tb-scan:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.tb-scan b { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-scan small { font-size: 12px; color: var(--muted); }
+.tb-scan .pill-bar { position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px; background: transparent; }
+.tb-scan .pill-bar span { display: block; height: 100%; background: var(--accent); }
+.fchip .x { display: inline-grid; place-items: center; margin-left: 2px; }
+.fchip .x svg { width: 14px; height: 14px; color: currentColor; }
+/* sidebar type tree */
+.nav-item.cat { padding-left: 4px; }
+.nav-tw { width: 16px; display: inline-grid; place-items: center; flex: none; margin-right: -6px; }
+.nav-tw svg { width: 12px !important; height: 12px !important; transition: transform .12s; }
+.nav-tw.open svg { transform: rotate(90deg); }

@@ -59,8 +59,10 @@ def test_quick_scan() -> list[str]:
     job.wait(60)
     failures += _check("detected as exfat", job.filesystem == "exfat", job.filesystem)
     failures += _check("free space read from the bitmap", job.free_bytes > 0, str(job.free_bytes))
-    by = {it.candidate.original_path: it for it in job.items}
-    failures += _check("only deleted files listed", "Photos/keep.png" not in by, str(sorted(by)))
+    every = {it.candidate.original_path: it for it in job.items}
+    by = {p: it for p, it in every.items() if not it.to_dict()["existing"]}
+    failures += _check("only deleted files listed as deleted", "Photos/keep.png" not in by, str(sorted(by)))
+    failures += _check("live file listed as Existing", "Photos/keep.png" in every and every["Photos/keep.png"].to_dict()["existing"])
     for rel in ("Photos/ferie på Hvaler.png", "Photos/split.bin", "Gammelt prosjekt/plan.txt", "invoice.pdf"):
         it = by.get(rel)
         same = it is not None and job.data(it).read_all() == files[rel]
@@ -83,7 +85,8 @@ def test_quick_scan() -> list[str]:
 
     deep = ScanJob(image_drive(path), DEEP).start()
     deep.wait(60)
-    named = {it.candidate.original_path for it in deep.items if it.candidate.original_path}
+    named = {it.candidate.original_path for it in deep.items if it.candidate.original_path
+             and not it.to_dict()["existing"]}
     carved_dupes = [it for it in deep.items if not it.candidate.original_path and it.candidate.ext in ("png", "pdf")]
     failures += _check("deep scan keeps names, no duplicates", named == set(by) and not carved_dupes,
                        f"{len(carved_dupes)} carved duplicates")

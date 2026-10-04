@@ -78,7 +78,9 @@ def test_fat_live_folder_and_freed_chain():
             failures += _check("status good", png.status == verify.GOOD, f"{png.status} {png.notes}")
         note = by_name.get("note.txt")
         failures += _check("root file found", note is not None and job.data(note).read_all() == small)
-        failures += _check("live file not listed", "keep.txt" not in by_name)
+        keep = by_name.get("keep.txt")
+        failures += _check("live file listed as Existing, not deleted",
+                           keep is not None and keep.to_dict()["existing"] and keep.status == verify.GOOD)
         return failures
     finally:
         job.close()

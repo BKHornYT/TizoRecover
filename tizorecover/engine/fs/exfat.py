@@ -372,5 +372,6 @@ def _walk(src, info: ExfatInfo, fat: Fat, bitmap: bytes, raw: bytes, prefix: str
             fragment_count=len(extents),
             metadata={"extents": extents, "cluster_size": info.cluster_size,
                       "modified": es.modified, "chain_guessed": guessed,
-                      "folder_deleted": in_deleted, "first_cluster": es.first_cluster},
+                      "folder_deleted": in_deleted, "first_cluster": es.first_cluster,
+                      "live": not es.deleted and not in_deleted},
         )

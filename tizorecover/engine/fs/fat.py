@@ -448,6 +448,7 @@ def _walk(src, fat: FatInfo, table: list[int], entries: list[DirEntry], prefix: 
             "modified": entry.modified,
             "chain_guessed": guessed,
             "folder_deleted": in_deleted,
+            "live": not entry.deleted and not in_deleted,
         }
         if read_data:
             metadata["inline_data"], _gaps = read_clusters(src, fat, chain, size)

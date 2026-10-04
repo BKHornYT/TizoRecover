@@ -84,6 +84,7 @@ class Item:
             "category": self.category,
             "method": c.strategy.value,
             "named": bool(c.original_path),
+            "existing": bool(c.metadata.get("existing")),
             "fragments": max(1, len(pieces_of(c))),
             "folder_deleted": bool(c.metadata.get("folder_deleted")),
         }
@@ -158,6 +159,11 @@ class ScanJob:
         self.reader: BlockReader | None = None
         self.drive_gone = False
         self.paused = False
+        self.list_existing = True
+        self.existing_count = 0
+        self.user_paused = False
+        self._run_ev = threading.Event()
+        self._run_ev.set()
         self.src: LockedSource | None = None
         self.allocation = None
         self._stop = threading.Event()
@@ -174,6 +180,7 @@ class ScanJob:
     def stop(self) -> None:
         """Stop now, even when the drive is sitting on a read: that read is cancelled."""
         self._stop.set()
+        self._run_ev.set()
         dev = self._device()
         if dev is not None and hasattr(dev, "interrupt"):
             dev.interrupt()
@@ -209,7 +216,7 @@ class ScanJob:
                 "progress": self.progress.to_dict(), "problems": list(self.problems),
                 "free_bytes": self.free_bytes, "autosave": bool(self.autosave),
                 "resumed_from": self.resumed_from, "bad_bytes": self.bad_bytes(),
-                "drive_gone": self.drive_gone, "paused": self.paused}
+                "drive_gone": self.drive_gone, "paused": self.paused, "user_paused": self.user_paused}
 
     def _device(self):
         """The raw device reader under any partition window or boot patch, if there is one."""
@@ -268,6 +275,12 @@ class ScanJob:
                 pass
             self.reader = None
 
+    MAX_EXISTING = 300_000
+
+    def _list_live(self) -> bool:
+        """Live files are listed (Existing) on any drive but the Windows one, which can hold millions."""
+        return self.drive.lost or (self.list_existing and not self.drive.system)
+
     def _set_ghosts(self, ghosts: list[dict]) -> None:
         """Keep the index leftovers whose size + type is unique: only those can be matched safely."""
         self.ghosts = ghosts
@@ -325,6 +338,31 @@ class ScanJob:
         self.progress.done += amount
         if self.progress.stage == "deep":
             self._maybe_autosave()
+        if not self._run_ev.is_set():
+            self._hold()
+
+    def pause(self) -> None:
+        """Hold the scan where it is (the drive is left alone) until resume() or stop()."""
+        if self.state in ("running", "starting"):
+            self._run_ev.clear()
+
+    def resume_scan(self) -> None:
+        self._run_ev.set()
+
+    def _hold(self) -> None:
+        stage, self.user_paused = self.progress.stage, True
+        self.state = "paused"
+        if self.autosave and self.items:
+            self.save()
+        started = time.time()
+        while not self._run_ev.wait(0.3):
+            if self._stop.is_set():
+                break
+        self.progress.stage_started += time.time() - started     # paused time is not scan time
+        self.user_paused = False
+        if not self._stop.is_set():
+            self.state = "running"
+            self.progress.stage = stage
 
     def _add(self, candidate: FileCandidate) -> None:
         if candidate.strategy is Strategy.CARVE:
@@ -334,10 +372,21 @@ class ScanJob:
                 if note not in owner.candidate.reasons:
                     owner.candidate.reasons.append(note)
                 return
-        try:
-            status, notes = verify.assess(candidate, self.src, self.allocation)
-        except (OSError, ValueError) as exc:
-            status, notes = verify.PARTIAL, [f"could not check: {exc}"]
+        existing = bool(candidate.metadata.get("live")) and not self.drive.lost
+        if existing:
+            self.existing_count += 1
+            if self.existing_count > self.MAX_EXISTING:
+                if self.existing_count == self.MAX_EXISTING + 1:
+                    self.problems.append(f"Over {self.MAX_EXISTING:,} existing files: only the first ones are listed "
+                                         f"(they are still on the drive anyway; the deleted ones are all here).")
+                return
+            candidate.metadata["existing"] = True
+            status, notes = verify.GOOD, ["Not deleted: the file is still on the drive."]
+        else:
+            try:
+                status, notes = verify.assess(candidate, self.src, self.allocation)
+            except (OSError, ValueError) as exc:
+                status, notes = verify.PARTIAL, [f"could not check: {exc}"]
         if candidate.strategy is Strategy.CARVE and not candidate.original_path:
             if not self._name_from_ghost(candidate):
                 self._name_from_content(candidate)
@@ -535,7 +584,7 @@ class ScanJob:
             self._stage("records", total)
             ghosts: list[dict] = []
             for cand in ntfs_fs.recover_ntfs(self.src, self.drive.id, progress=self._advance,
-                                             should_stop=stop, include_live=self.drive.lost, ghosts=ghosts):
+                                             should_stop=stop, include_live=self._list_live(), ghosts=ghosts):
                 self._add(cand)
             self._set_ghosts(ghosts)
             if not self.stopping:
@@ -543,17 +592,17 @@ class ScanJob:
         elif fs in ("fat", "fat32"):
             self._stage("records", 0)
             for cand in fat_fs.recover_fat(self.src, self.drive.id, progress=self._advance,
-                                           should_stop=stop, include_live=self.drive.lost):
+                                           should_stop=stop, include_live=self._list_live()):
                 self._add(cand)
         elif fs == "exfat":
             self._stage("records", 0)
             for cand in exfat_fs.recover_exfat(self.src, self.drive.id, progress=self._advance,
-                                               should_stop=stop, include_live=self.drive.lost):
+                                               should_stop=stop, include_live=self._list_live()):
                 self._add(cand)
         elif fs.startswith("ext"):
             self._stage("records", 0)
             for cand in ext_fs.recover_ext(self.src, self.drive.id, progress=self._advance,
-                                           should_stop=stop, include_live=self.drive.lost):
+                                           should_stop=stop, include_live=self._list_live()):
                 self._add(cand)
         else:
             self.problems.append(f"No readable filesystem ({fs}). Run a deep scan to find "

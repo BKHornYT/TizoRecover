@@ -46,6 +46,9 @@ class _QuickWatch(fixdrive.Watch):
     def __init__(self, seconds: int = 45) -> None:
         super().__init__(10)
 
+    def _letters(self) -> set[str]:          # never this PC's real drive letters
+        return {"C"}
+
 
 fixdrive.Watch = _QuickWatch
 
@@ -146,6 +149,8 @@ def main() -> int:
         group_text = lambda g: page.locator(f"#pop-show label:has([data-group={g}])").inner_text()  # noqa: E731
         named = int(_re.search(r"\(([\d,]+)\)", group_text("named")).group(1).replace(",", ""))
         carved = int(_re.search(r"\(([\d,]+)\)", group_text("carved")).group(1).replace(",", ""))
+        existing = int(_re.search(r"\(([\d,]+)\)", group_text("existing")).group(1).replace(",", ""))
+        check("live files listed as Existing", existing >= 1, str(existing))
         page.click("#rv-title")
         check("group row in the tree", "Deleted or lost (17)" in page.locator(".row.group").first.inner_text())
         check("one tree: Deleted or lost group", named == 17, str(named))
@@ -156,7 +161,7 @@ def main() -> int:
         check("chances column", page.locator(".row.file .ch").count() > 0)
         shot("3-review")
 
-        photos = page.locator(".row.folder", has_text="Photos").first
+        photos = page.locator(".row.folder", has_text="Photos (9)").first
         photos.locator("[data-fpick]").click()
         sel = page.inner_text("#sel-info")
         check("folder tick selects 9 files", sel.startswith("9 files"), sel)
@@ -283,7 +288,7 @@ def main() -> int:
 
         print("recover")
         page.evaluate("document.querySelector('#select-none').click()")   # clear whatever is ticked
-        page.locator(".row.folder", has_text="Photos").first.locator("[data-fpick]").click()
+        page.locator(".row.folder", has_text="Photos (9)").first.locator("[data-fpick]").click()
         page.click("#recover-btn")
         page.wait_for_selector("#recover-dialog[open]")
         page.fill("#rd-dest", dest)
@@ -296,7 +301,8 @@ def main() -> int:
         check("done screen", title == "9 files recovered", title)
         shot("10-recover-done")
         page.click("#rd-cancel")
-        want = [it for it in app.job.snapshot() if (it.candidate.original_path or "").startswith("Photos/")]
+        want = [it for it in app.job.snapshot() if (it.candidate.original_path or "").startswith("Photos/")
+                and not it.to_dict()["existing"]]
         same = 0
         for it in want:
             path = os.path.join(dest, *it.candidate.original_path.split("/"))
@@ -319,7 +325,7 @@ def main() -> int:
         page.wait_for_selector("#screen-scan:not([hidden])")
         page.wait_for_function("document.querySelector('#sc-title').textContent.startsWith('Found')"
                                " && !document.querySelector('#sc-autosave').hidden", timeout=30000)
-        check("results reopened", f"{named + carved} files" in page.inner_text("#sc-title"),
+        check("results reopened", f"{named + carved + existing} files" in page.inner_text("#sc-title"),
               page.inner_text("#sc-title"))
         check("resumed note", "Resumed" in page.inner_text("#sc-autosave"))
         nav(page, "devices")

@@ -665,6 +665,10 @@ class Handler(BaseHTTPRequestHandler):
                     except OSError:
                         pass
             return self._json({"ok": True})
+        if path == "/api/scan/pause":
+            if app.job is not None:
+                app.job.resume_scan() if body.get("resume") else app.job.pause()
+            return self._json({"ok": True})
         if path == "/api/scan/stop":
             if app.job is not None:
                 app.job.stop()

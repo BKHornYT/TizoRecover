@@ -494,7 +494,8 @@ def _candidate(src, info: ExtInfo, inode: Inode, name: str, path: str, volume: s
                live: bool) -> FileCandidate | None:
     if inode.size == 0:
         return None
-    metadata: dict = {"inode": inode.number, "block_size": info.block, "modified": inode.mtime or None}
+    metadata: dict = {"inode": inode.number, "block_size": info.block, "modified": inode.mtime or None,
+                      "live": bool(live)}
     if inode.flags & INLINE_FL:
         metadata["inline_data"] = inode.block[:min(inode.size, 60)]
         runs: list = []

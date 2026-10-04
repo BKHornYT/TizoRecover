@@ -45,6 +45,8 @@ const P = {
   shrink: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   alert: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/>',
+  pause: '<path d="M8 5v14M16 5v14"/>',
+  play: '<path d="M7 4l13 8-13 8z"/>',
   sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   star: '<path d="M12 3l2.7 5.6 6.2.9-4.5 4.4 1 6.1L12 17.3 6.6 20l1-6.1L3.1 9.5l6.2-.9z"/>',
@@ -267,6 +269,15 @@ function go(screen) {
   if (screen === "devices" && S.drives.length) loadSaved(true);
 }
 document.addEventListener("click", (ev) => {
+  const tw = ev.target.closest("[data-navopen]");
+  if (tw) {
+    ev.stopPropagation();
+    const c = tw.dataset.navopen;
+    S.navOpen ||= new Set();
+    S.navOpen.has(c) ? S.navOpen.delete(c) : S.navOpen.add(c);
+    renderNav();
+    return;
+  }
   const b = ev.target.closest("[data-goto]");
   if (!b || b.closest(".dev-body")) return;
   if (b.dataset.cat !== undefined) {
@@ -990,7 +1001,13 @@ $("#open-image").onclick = async () => {
 /* ---------- scanning ---------- */
 // "paused" counts as running: the scan is alive, waiting for its drive to come back (Stop still works).
 const running = () => S.scan && (S.scan.state === "running" || S.scan.state === "starting" || S.scan.state === "paused");
-const paused = () => S.scan && S.scan.state === "paused";
+const paused = () => S.scan && S.scan.state === "paused" && !S.scan.user_paused;   // waiting for the drive
+const userPaused = () => S.scan && S.scan.state === "paused" && !!S.scan.user_paused;
+async function togglePause() {
+  if (!running()) return;
+  await api("/api/scan/pause", { resume: userPaused() }).catch((e) => toast(e.message));
+  poll();
+}
 
 async function startScan(driveId, mode, opts = {}) {
   if (running() && !(await ask("Stop the current scan?", "A scan is still running. Starting another one stops it. Its progress stays saved.", "Stop and continue"))) return;
@@ -1107,14 +1124,16 @@ function renderNav() {
     const e = (it.ext || "?").toLowerCase();
     (exts[c] ||= {})[e] = (exts[c][e] || 0) + 1;
   }
-  const open = S.screen === "review" ? (S.cat === "other*" ? "other" : S.cat) : null;
-  const row = (attrs, ic, label, n, cls = "") =>
-    `<button class="nav-item ${cls} ${n ? "" : "zero"}" data-goto="review" ${attrs}>${icon(ic)}<span class="grow">${esc(label)}</span>${n ? `<span class="nav-pill">${nf(n)}</span>` : ""}</button>`;
+  S.navOpen ||= new Set();
+  const row = (attrs, ic, label, n, cls = "", twisty = "") =>
+    `<button class="nav-item ${cls} ${n ? "" : "zero"}" data-goto="review" ${attrs}>${twisty}${icon(ic)}<span class="grow">${esc(label)}</span>${n ? `<span class="nav-pill">${nf(n)}</span>` : ""}</button>`;
   let html = row(`data-cat="" id="nav-review"`, driveKind(d), driveTitle(d).trim(), S.items.length, "drive");
   for (const c of TILE_CATS) {
     const key = c === "other" ? "other*" : c;
-    html += row(`data-cat="${key}"`, c, CAT_LABEL[c] === "Video" ? "Videos" : CAT_LABEL[c], counts[c] || 0);
-    if (open === c && exts[c]) {
+    const isOpen = S.navOpen.has(c) && !!exts[c];
+    const tw = exts[c] ? `<span class="nav-tw ${isOpen ? "open" : ""}" data-navopen="${c}">${icon("chevron")}</span>` : `<span class="nav-tw"></span>`;
+    html += row(`data-cat="${key}"`, c, CAT_LABEL[c] === "Video" ? "Videos" : CAT_LABEL[c], counts[c] || 0, "cat", tw);
+    if (isOpen) {
       for (const [e, n] of Object.entries(exts[c]).sort((a, b) => b[1] - a[1]).slice(0, 12)) {
         html += row(`data-cat="${key}" data-ext="${esc(e)}"`, "file", e.toUpperCase(), n, "sub");
       }
@@ -1148,7 +1167,8 @@ function renderScan() {
     : live ? `Scanning ${name}`
     : s.state === "done" ? `Found ${plural(S.items.length, "file")} on ${size(total)}`
     : s.state === "failed" ? "The scan could not run" : `Stopped: ${plural(S.items.length, "file")} found on ${size(total)}`;
-  $("#sc-sub").textContent = live
+  $("#sc-sub").textContent = userPaused() ? `${plural(S.items.length, "file")} / ${size(total)} - Paused`
+    : live
     ? `${p.total ? `${Math.floor(pct)}% complete` : STAGE_LABEL[p.stage] || "Starting"} – ${plural(S.items.length, "file")} / ${size(total)}`
     : s.state === "done" ? `Scan completed successfully · ${s.mode === "deep" ? "All recovery methods" : "Quick scan"} · ${driveTitle(d).trim()}`
     : s.state === "failed" ? "" : `Scan of ${driveTitle(d).trim()} stopped after ${duration(p.elapsed)}. What was found can still be recovered.`;
@@ -1190,6 +1210,9 @@ function renderScan() {
   $("#sc-review").disabled = !S.items.length;
   $("#sc-recover").disabled = !S.items.length;
   $("#sc-stop").hidden = !live;
+  $("#sc-pause").hidden = !live || paused();
+  $("#sc-pause").innerHTML = icon(userPaused() ? "play" : "pause");
+  $("#sc-pause").title = userPaused() ? "Resume" : "Pause";
   $("#sc-deeper").hidden = live || s.mode !== "quick" || s.state === "failed" || !d.id;
   const tip = $("#sc-tip");
   tip.hidden = !(live && S.tips);
@@ -1205,6 +1228,8 @@ $("#sc-stop").onclick = async () => {
   }
 };
 $("#sc-recover").onclick = () => openRecover(S.items.slice());
+$("#sc-pause").onclick = togglePause;
+$("#rv-pause").onclick = togglePause;
 $("#sc-tip-close").onclick = () => { S.tips = false; try { localStorage.setItem("tizo-tips", "0"); } catch {} $("#sc-tip").hidden = true; };
 $("#sc-review").onclick = () => go("review");
 $("#sc-deeper").onclick = () => S.scan && startScan(S.scan.drive.id, "deep");
@@ -1219,12 +1244,16 @@ function renderReviewHead() {
   $("#rv-title").textContent = S.ext ? S.ext.toUpperCase() : cat ? (cat === "video" ? "Videos" : CAT_LABEL[cat]) : driveTitle(d).trim();
   $("#rv-sub").textContent = `${plural((S.shown || []).length, "file")} / ${size(total)}`;
   const live = running();
-  $("#rv-scanpill").hidden = !live;
-  if (live) {
-    const pct = overallPct(s);
-    $("#rv-pillbar").style.width = `${pct}%`;
-    $("#rv-pilltext").textContent = s.progress.total ? `Scanning ${Math.floor(pct)}%` : "Scanning…";
-  }
+  $("#rv-scanpill").hidden = false;
+  $("#rv-pause").hidden = !live || paused();
+  $("#rv-pause").innerHTML = icon(userPaused() ? "play" : "pause");
+  $("#rv-pause").title = userPaused() ? "Resume" : "Pause";
+  const found = S.items.reduce((a, it) => a + it.size, 0);
+  const pct = overallPct(s);
+  $("#rv-pilltext").textContent = live ? `Scanning “${driveTitle(d).trim()}”` : `“${driveTitle(d).trim()}”`;
+  $("#rv-pillsub").textContent = `${plural(S.items.length, "file")} / ${size(found)}${userPaused() ? " - Paused" : paused() ? " - Waiting for the drive"
+    : live ? ` - ${s.progress.total ? `${Math.floor(pct)}%` : "scanning"}` : s.state === "done" ? " - Scan complete" : " - Stopped"}`;
+  $("#rv-pillbar").style.width = live ? `${pct}%` : "0";
 }
 $("#rv-scanpill").onclick = () => go("scan");
 
@@ -1452,7 +1481,7 @@ function renderList() {
         }
         return `<div class="row folder ${r.open ? "open" : ""} ${f.deleted ? "deleted" : ""}" data-i="${i}" style="top:${i * ROW}px">
         <div class="c-check"><input type="checkbox" class="check" data-fpick="${i}" ${state === "checked" ? "checked" : ""} ${state === "data-ind" ? "data-ind" : ""}></div>
-        <div class="name-cell" style="${pad}"><span class="twisty">${icon("chevron")}</span>${icon("folder", "fi")}<span class="nm" title="${esc(f.key)}${f.deleted ? " (deleted folder)" : ""}">${esc(f.name)}</span><span class="cnt">${nf(f.count)}</span></div>
+        <div class="name-cell" style="${pad}"><span class="twisty">${icon("chevron")}</span>${icon("folder", "fi")}<span class="nm" title="${esc(f.key)}${f.deleted ? " (deleted folder)" : ""}">${esc(f.name)} (${nf(f.count)})</span></div>
         <div></div><div class="cell-muted">${f.deleted ? "Deleted folder" : ""}</div><div class="cell-muted">Folder</div><div class="num cell-muted">${size(f.bytes)}</div></div>`;
       }]);
     } else {
@@ -1726,6 +1755,9 @@ function renderFilterBadge() {
   };
   const cat = S.cat === "other*" ? "other" : S.cat;
   setChip("#chip-type", cat || S.ext, S.ext ? S.ext.toUpperCase() : cat ? (cat === "video" ? "Videos" : CAT_LABEL[cat]) : "", "File type");
+  const chipX = $("#chip-type .x");
+  if (cat || S.ext) { if (!chipX) $("#chip-type").insertAdjacentHTML("beforeend", `<span class="x" title="Show all file types">${icon("x")}</span>`); }
+  else if (chipX) chipX.remove();
   setChip("#chip-size", f.size, $("#f-size").selectedOptions[0]?.textContent || "", "File size");
   setChip("#chip-date", f.date, $("#f-date").selectedOptions[0]?.textContent || "", "Date modified");
   const names = ["good", "partial", "overwritten"].filter((k) => f.status.has(k)).map((k) => CHANCE[k].label);
@@ -1755,6 +1787,10 @@ const CHIP_POPS = { "#chip-show": "#pop-show", "#chip-type": "#pop-type", "#chip
 for (const [chip, pop] of Object.entries(CHIP_POPS)) {
   $(chip).onclick = (e) => {
     e.stopPropagation();
+    if (chip === "#chip-type" && e.target.closest(".x")) {
+      S.cat = null; S.ext = null; viewport.scrollTop = 0; refilter(); renderNav();
+      return;
+    }
     const open = $(pop).hidden;
     Object.values(CHIP_POPS).forEach((p) => { $(p).hidden = true; });
     if (pop === "#pop-show") renderShowPop();
