@@ -300,7 +300,7 @@ function go(screen) {
   if (screen === "scan" && !S.scan) screen = "devices";
   S.screen = screen;
   if (screen === "gallery" && !S.scan) screen = "devices";
-  for (const s of ["devices", "scan", "review", "gallery", "saved", "fix", "tools"]) $(`#screen-${s}`).hidden = s !== screen;
+  for (const s of ["devices", "scan", "review", "gallery", "saved", "fix", "tools", "done"]) $(`#screen-${s}`).hidden = s !== screen;
   // Like Disk Drill: the sidebar is the home list, or -- on a scan's screens -- its dashboard and results.
   const scanMode = !!S.scan && ["scan", "review", "gallery"].includes(screen);
   $("#nav-home").hidden = scanMode;
@@ -2511,31 +2511,50 @@ function setRecoverView(view) {
   recoverState = view;
   $("#rd-form").hidden = view !== "form";
   $("#rd-progress").hidden = view !== "running";
-  $("#rd-done").hidden = view !== "done";
-  $(".dlg-head", dlg).hidden = view === "done";
   $("#rd-start").hidden = view !== "form";
-  $("#rd-open").hidden = view !== "done";
-  $("#rd-open").classList.add("primary");
-  $("#rd-report").hidden = true;
-  $("#rd-eject").hidden = true;
-  $("#rd-cancel").textContent = view === "form" ? "Cancel" : view === "running" ? "Stop" : "Close";
+  $("#rd-browse").hidden = view !== "form";
+  $("#rd-cancel").textContent = view === "running" ? "Stop" : "Cancel";
 }
 
+let destOptions = [];
 function openRecover(items) {
   recoverItems = items;
   const bytes = items.reduce((a, it) => a + it.size, 0);
   const low = items.filter((it) => it.status === "overwritten").length;
-  $("#rd-title").textContent = items.length === 1 ? `Recover “${items[0].name}”` : `Recover ${plural(items.length, "file")}`;
-  $("#rd-sub").textContent = `${size(bytes)} will be copied out. The drive you scanned is never changed.`;
+  $("#rd-title").textContent = `You have ${plural(items.length, "file")} / ${size(bytes)} to recover`;
   setRecoverView("form");
   $("#rd-msg").innerHTML = low ? `<div class="msg warn">${icon("alert")}<span>${plural(low, "file")} with low chances: ${low === 1 ? "it" : "they"} will most likely not open.</span></div>` : "";
-  if (!$("#rd-dest").value) { try { $("#rd-dest").value = localStorage.getItem("tizo-dest") || ""; } catch {} }
+  let last = "";
+  try { last = localStorage.getItem("tizo-dest") || ""; } catch {}
+  destOptions = [];
+  renderDestList();
   dlg.showModal();
-  if (!$("#rd-dest").value) {
-    // First time: a dated folder on the Desktop (or another drive), never on the drive being recovered.
-    api("/api/suggest-dest").then((r) => { if (r.dest && !$("#rd-dest").value) $("#rd-dest").value = r.dest; checkDest(); })
-      .catch(() => checkDest());
-  } else checkDest();
+  api("/api/destinations").then((r) => {
+    destOptions = r.destinations || [];
+    // The folder used last time comes first, as Disk Drill shows it.
+    if (last && !destOptions.some((o) => o.path === last)) destOptions.unshift({ kind: "folder", label: last, path: last, sub: "Used last time" });
+    if (!$("#rd-dest").value) $("#rd-dest").value = last || (destOptions[0] && destOptions[0].path) || "";
+    renderDestList();
+    checkDest();
+  }).catch(() => checkDest());
+}
+
+function renderDestList() {
+  const need = recoverItems.reduce((a, it) => a + it.size, 0);
+  const cur = $("#rd-dest").value.trim();
+  const drives = destOptions.filter((o) => o.kind === "drive").length;
+  $("#rd-avail").textContent = destOptions.length ? `(${plural(drives, "device")} available)` : "";
+  $("#rd-list").innerHTML = destOptions.length ? destOptions.map((o, i) => {
+    const fits = o.free == null || o.free > need;
+    const room = o.free != null ? `${size(o.free)} available` : "";
+    return `<label class="rd-opt ${cur === o.path ? "sel" : ""}"><input type="radio" name="rd-pick" value="${i}" ${cur === o.path ? "checked" : ""}>
+      <span class="rd-ico ${o.kind}">${icon(o.kind === "folder" ? "download" : o.removable ? "usb" : "drive")}</span>
+      <span class="t"><b title="${esc(o.path)}">${esc(o.label)}</b><small>${esc([o.sub, room].filter(Boolean).join(" • "))}</small></span>
+      <span class="rd-fit ${fits ? "ok" : "bad"}" title="${fits ? "Enough room" : "Not enough room"}">${icon(fits ? "check" : "alert")}</span></label>`;
+  }).join("") : `<div class="rd-none"><span class="spinner sm"></span>Looking for drives…</div>`;
+  $$("#rd-list [name=rd-pick]").forEach((el) => {
+    el.onchange = () => { $("#rd-dest").value = destOptions[Number(el.value)].path; renderDestList(); checkDest(); };
+  });
 }
 
 let destTimer = null;
@@ -2549,21 +2568,22 @@ async function checkDest() {
     const r = await api("/api/check-dest", { dest, need });
     $("#rd-msg").innerHTML = warnLow + (r.error ? `<div class="msg bad">${icon("alert")}<span>${esc(r.error)}</span></div>` : "");
     $("#rd-start").disabled = !!r.error;
-    if (r.total) {
-      const used = ((r.total - r.free) / r.total) * 100;
-      const needPct = Math.min(100 - used, (need / r.total) * 100);
-      $("#rd-space").innerHTML = `<div class="bar"><div class="used" style="width:${used}%"></div><div class="need ${need > r.free ? "over" : ""}" style="width:${Math.max(needPct, 0.6)}%"></div></div>
-        <span>${esc(r.root || "")} ${size(r.free)} free · these files need ${size(need)}</span>`;
-    }
+    if (r.total) $("#rd-space").textContent = `${r.root || ""} ${size(r.free)} free · these files need ${size(need)}`;
   } catch {
     $("#rd-start").disabled = true;
   }
 }
-$("#rd-dest").oninput = () => { clearTimeout(destTimer); destTimer = setTimeout(checkDest, 250); };
+$("#rd-dest").oninput = () => { clearTimeout(destTimer); destTimer = setTimeout(() => { renderDestList(); checkDest(); }, 250); };
 $("#rd-browse").onclick = async () => {
   try {
     const { path } = await api("/api/pick", { kind: "folder" });
-    if (path) { $("#rd-dest").value = path; checkDest(); }
+    if (path) {
+      destOptions = destOptions.filter((o) => o.path !== path);
+      destOptions.unshift({ kind: "folder", label: path, path, sub: "Chosen folder" });
+      $("#rd-dest").value = path;
+      renderDestList();
+      checkDest();
+    }
   } catch (e) { toast(e.message); }
 };
 $("#rd-cancel").onclick = async () => {
@@ -2575,7 +2595,7 @@ dlg.addEventListener("cancel", (e) => { if (recoverState === "running") e.preven
 $("#rd-start").onclick = async () => {
   const dest = $("#rd-dest").value.trim();
   try {
-    await api("/api/recover", { ids: recoverItems.map((it) => it.id), dest, keep_folders: $("#rd-keep").checked });
+    await api("/api/recover", { ids: recoverItems.map((it) => it.id), dest, keep_folders: !$("#rd-one").checked });
   } catch (e) {
     $("#rd-msg").innerHTML = `<div class="msg bad">${icon("alert")}<span>${esc(e.message)}</span></div>`;
     return;
@@ -2585,6 +2605,7 @@ $("#rd-start").onclick = async () => {
   $("#rd-bar").style.width = "0%";
   pollRecover();
 };
+let doneFrom = "review";
 async function pollRecover() {
   const r = await api("/api/recover").catch(() => null);
   if (!r) { recoverPoll = setTimeout(pollRecover, 800); return; }
@@ -2597,26 +2618,35 @@ async function pollRecover() {
   const ok = r.done_files - failed.length;
   const bad = new Set(failed.map((f) => f.name));
   if (r.state === "done") for (const it of recoverItems) if (!bad.has(it.name)) S.recovered.add(it.id);
-  setRecoverView("done");
-  const clean = r.state === "done" && !failed.length;
-  $("#rd-done-ico").className = `done-ico ${clean ? "" : "warn"}`;
-  $("#rd-done-ico").innerHTML = icon(clean ? "check" : "alert");
-  $("#rd-done-title").textContent = r.state === "done" ? `${plural(ok, "file")} recovered` : `Stopped: ${plural(ok, "file")} recovered`;
-  $("#rd-done-sub").textContent = r.dest;
-  $("#rd-done-msg").innerHTML = failed.length
-    ? `<div class="msg bad">${icon("alert")}<span>${plural(failed.length, "file")} could not be written: ${esc(failed.slice(0, 3).map((f) => `${f.name} (${f.error})`).join("; "))}${failed.length > 3 ? "…" : ""}</span></div>` : "";
-  $("#rd-open").onclick = () => api("/api/open-folder", { path: r.dest }).catch(() => {});
-  // Your files are safe: offer to eject the drive they came from (a USB stick or card).
-  const src = S.scan && S.scan.drive;
-  if (r.state === "done" && src && src.removable && src.kind !== "image") {
-    $("#rd-eject").hidden = false;
-    $("#rd-eject").onclick = async () => { dlg.close(); await ejectDisk(src.disk); };
-  }
-  if (r.report) {
-    $("#rd-report").hidden = false;
-    $("#rd-report").onclick = () => api("/api/open-folder", { path: r.report }).catch(() => {});
-  }
+  setRecoverView("form");
+  dlg.close();
+  showDone(r, ok, failed);
 }
+
+// Disk Drill's "Data recovery complete" page.
+function showDone(r, ok, failed) {
+  const clean = r.state === "done" && !failed.length;
+  const okBytes = recoverItems.filter((it) => !failed.some((f) => f.name === it.name)).reduce((a, it) => a + it.size, 0);
+  $("#dn-ring").className = `done-ring ${clean ? "" : "warn"}`;
+  $("#dn-state").innerHTML = `${icon(clean ? "check" : "alert")}${clean ? "Data recovery complete" : r.state === "done" ? "Data recovery finished with problems" : "Data recovery stopped"}`;
+  $("#dn-state").className = `done-state ${clean ? "" : "warn"}`;
+  $("#dn-title").textContent = `${nf(ok)} file(s) / ${size(okBytes)}`;
+  const src = (S.scan && S.scan.drive) || {};
+  $("#dn-from").innerHTML = `${esc(driveTitle(src).trim())} <span class="muted">${esc(driveType(src))}</span>`;
+  $("#dn-path").textContent = r.dest;
+  $("#dn-msg").innerHTML = failed.length
+    ? `<div class="msg bad">${icon("alert")}<span>${plural(failed.length, "file")} could not be written: ${esc(failed.slice(0, 3).map((f) => `${f.name} (${f.error})`).join("; "))}${failed.length > 3 ? "…" : ""}</span></div>` : "";
+  $("#dn-open").onclick = () => api("/api/open-folder", { path: r.dest }).catch(() => {});
+  $("#dn-report").hidden = !r.report;
+  $("#dn-report").onclick = () => api("/api/open-folder", { path: r.report }).catch(() => {});
+  // Your files are safe: offer to eject the drive they came from (a USB stick or card).
+  $("#dn-eject").hidden = !(r.state === "done" && src.removable && src.kind !== "image");
+  $("#dn-eject").onclick = () => ejectDisk(src.disk);
+  doneFrom = ["review", "gallery", "scan"].includes(S.screen) ? S.screen : "review";
+  go("done");
+}
+$("#dn-back").onclick = () => go(doneFrom);
+$("#dn-home").onclick = () => go("devices");
 
 /* ---------- disk tools: erase ---------- */
 function renderTools() {

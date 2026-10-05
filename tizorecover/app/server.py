@@ -272,6 +272,37 @@ class App:
             return f"{best.letter}:\\TizoRecover {stamp}"
         return ""
 
+    def destinations(self) -> list[dict]:
+        """Disk Drill's destination list: every other drive with a letter, then the usual folders.
+        The scanned disk is never offered; each entry says how much room it has."""
+        stamp = time.strftime("%Y-%m-%d")
+        source = self.job.drive.disk if self.job is not None and self.job.drive.kind != "image" else None
+        drives = self.all_drives()
+        out: list[dict] = []
+        for d in drives:
+            if not d.letter or d.kind != "volume" or d.lost or (source is not None and d.disk == source):
+                continue
+            root = f"{d.letter}:\\"
+            try:
+                total, _used, free = shutil.disk_usage(root)
+            except OSError:
+                continue
+            kind = "USB" if d.removable else "Internal"
+            out.append({"kind": "drive", "label": f"{d.label or 'Local Disk'} ({d.letter}:)", "path": os.path.join(root, f"TizoRecover {stamp}"),
+                        "sub": f"{kind} {_gb(total)} disk", "free": free, "total": total, "removable": d.removable, "system": d.system})
+        home = os.path.expanduser("~")
+        for name in ("Desktop", "Downloads"):
+            folder = _desktop_dir() if name == "Desktop" else os.path.join(home, "Downloads")
+            if not folder or not os.path.isdir(folder) or (source is not None and drives_mod.disk_of_path(folder, drives) == source):
+                continue
+            try:
+                total, _used, free = shutil.disk_usage(folder)
+            except OSError:
+                continue
+            out.append({"kind": "folder", "label": folder, "path": os.path.join(folder, f"TizoRecover {stamp}"),
+                        "sub": "", "free": free, "total": total})
+        return out
+
     def saved_scans(self) -> list[dict]:
         """Saved scans, each tied to a drive that is plugged in now (or ``drive_id`` None)."""
         by_key = {tzscan.drive_key(d): d for d in self.all_drives()}
@@ -527,6 +558,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(d)
         if path == "/api/fix/watch":
             return self._json(app.watch.status() if app.watch else {"state": "idle"})
+        if path == "/api/destinations":
+            return self._json({"destinations": app.destinations()})
         if path == "/api/suggest-dest":
             return self._json({"dest": app.suggest_dest()})
         if path == "/api/drive-mask":
@@ -938,6 +971,10 @@ def relaunch_as_admin() -> bool:
         threading.Timer(0.5, lambda: os._exit(0)).start()
         return True
     return False
+
+
+def _gb(n: int) -> str:
+    return f"{n / 1e12:.2f} TB" if n >= 1e12 else f"{n / 1e9:.0f} GB" if n >= 1e10 else f"{n / 1e9:.1f} GB"
 
 
 def _desktop_dir() -> str:

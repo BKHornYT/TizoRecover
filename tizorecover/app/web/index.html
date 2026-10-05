@@ -246,6 +246,30 @@
     </footer>
   </section>
 
+  <!-- ============ recovery done (Disk Drill's page) ============ -->
+  <section class="screen" id="screen-done" hidden>
+    <div class="topbar">
+      <button class="btn ghost" id="dn-back"><span data-icon="chevleft"></span>Scan results</button>
+      <div class="grow"></div>
+      <button class="btn ghost" id="dn-report" hidden>View report…</button>
+    </div>
+    <div class="done-page">
+      <div class="done-ring" id="dn-ring"><span data-icon="folder"></span></div>
+      <div class="done-text">
+        <div class="done-state" id="dn-state"></div>
+        <h1 id="dn-title"></h1>
+        <p><b>From:</b> <span id="dn-from"></span></p>
+        <p><b>Path:</b> <span id="dn-path"></span></p>
+        <div id="dn-msg"></div>
+        <div class="done-acts">
+          <button class="btn primary" id="dn-open">Show recovered data in Explorer</button>
+          <button class="btn" id="dn-home" title="Storage devices"><span data-icon="home"></span></button>
+          <button class="btn ghost" id="dn-eject" hidden><span data-icon="eject"></span>Eject the drive</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ saved scans ============ -->
   <section class="screen" id="screen-saved" hidden>
     <div class="topbar">
@@ -312,14 +336,15 @@
 
 <!-- ============ recover dialog ============ -->
 <dialog id="recover-dialog">
-  <div class="dlg-head"><h2 id="rd-title">Recover files</h2><p id="rd-sub"></p></div>
+  <div class="dlg-head"><h2 id="rd-title">Recover files</h2>
+    <p id="rd-sub">Please choose recovery destination. It is highly recommended to recover to a different storage device than the scanned one.</p></div>
   <div class="dlg-body" id="rd-form">
-    <label class="field-label" for="rd-dest">Save to</label>
-    <div class="field"><input id="rd-dest" placeholder="A folder on another drive" spellcheck="false"><button class="btn" id="rd-browse"><span data-icon="folder"></span>Browse…</button></div>
+    <div class="rd-listhead"><b>Choose recovery destination folder</b><span id="rd-avail"></span></div>
+    <div class="rd-list" id="rd-list"></div>
+    <div class="rd-dest"><span>Save to</span><input id="rd-dest" placeholder="A folder on another drive" spellcheck="false"></div>
     <div class="space" id="rd-space"></div>
     <div id="rd-msg"></div>
-    <label class="opt"><input type="checkbox" class="check" id="rd-keep" checked><span>Keep the original folders</span></label>
-    <div class="msg info sm-text"><span data-icon="shield"></span><span>Always save to a <b>different drive</b> than the one you are recovering from. Writing to it can overwrite the very files you want back, so TizoRecover refuses to.</span></div>
+    <label class="opt"><input type="checkbox" class="check" id="rd-one"><span>Save all files to one folder</span></label>
   </div>
   <div class="dlg-body" id="rd-progress" hidden>
     <div class="rd-run">
@@ -327,19 +352,11 @@
       <div class="rd-status"><b id="rd-pct">0%</b><span id="rd-status"></span></div>
     </div>
   </div>
-  <div class="dlg-body done-view" id="rd-done" hidden>
-    <div class="done-ico" id="rd-done-ico"></div>
-    <h2 id="rd-done-title"></h2>
-    <p id="rd-done-sub"></p>
-    <div id="rd-done-msg"></div>
-  </div>
   <div class="dlg-foot">
-    <button class="btn ghost" id="rd-report" hidden>Open report</button>
-    <button class="btn ghost" id="rd-eject" hidden><span data-icon="eject"></span>Eject the drive</button>
+    <button class="btn" id="rd-browse">Choose destination</button>
     <div class="grow"></div>
-    <button class="btn ghost" id="rd-cancel">Cancel</button>
-    <button class="btn" id="rd-open" hidden><span data-icon="folder"></span>Show files</button>
-    <button class="btn primary" id="rd-start">Recover</button>
+    <button class="btn primary" id="rd-start">Next</button>
+    <button class="btn" id="rd-cancel">Cancel</button>
   </div>
 </dialog>
 
