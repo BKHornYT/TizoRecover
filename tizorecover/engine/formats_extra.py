@@ -84,6 +84,10 @@ def _mpeg_es_quick(buf: bytes, i: int) -> bool:
 
 
 def _mpeg_es_walk(src, off: int, limit: int) -> Extent | None:
+    # The sequence header must make sense (size, frame rate): a Minecraft region chunk of 435 bytes starts
+    # 00 00 01 B3 too (its length) and is otherwise zlib data; on the owner's stick that was 51 "videos".
+    if not _mpeg_es_quick(src.at(off, 8), 0):
+        return None
     end = _end(src, limit, off, 4096 * MIB)
     pos, last, pictures, mpeg2, closed = off, off, 0, False, False
     step = 1 * MIB

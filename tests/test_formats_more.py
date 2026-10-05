@@ -49,8 +49,26 @@ def test_all_together() -> list[str]:
     return missing
 
 
+def test_minecraft_chunk_is_not_a_video() -> list[str]:
+    """A Minecraft region chunk of 435 bytes starts 00 00 01 B3 (its length), then 02 78 9C (zlib). On the owner's
+    stick 51 of those sat at cluster starts and Disk Drill listed them as .m1v videos."""
+    import random
+    import zlib
+    rng = random.Random(8)
+    chunks = b""
+    for _ in range(6):
+        body = b"\x02" + zlib.compress(rng.randbytes(430))
+        chunk = len(body).to_bytes(4, "big")
+        chunk = b"\x00\x00\x01\xb3" + body[:431]
+        chunks += chunk + bytes(4096 - len(chunk))
+    found, _src = _carve(chunks, chunk=4096)
+    videos = [c for c in found if c.ext in ("m1v", "m2v")]
+    print("minecraft chunks:", "ok" if not videos else f"{len(videos)} taken for video")
+    return [] if not videos else ["minecraft chunk carved as video"]
+
+
 def main() -> int:
-    failures = test_each_new_format() + test_all_together()
+    failures = test_each_new_format() + test_all_together() + test_minecraft_chunk_is_not_a_video()
     print()
     if failures:
         print(f"FAILURES ({len(failures)}): {failures}")
