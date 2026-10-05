@@ -153,6 +153,12 @@
         <div class="search"><span data-icon="search"></span><input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false"></div>
       </div>
       <div class="rv-titles2"><div class="dev-ico" id="rv-icon" hidden></div><h1 id="rv-title"></h1><p id="rv-sub"></p></div>
+      <div class="more-banner" id="more-banner" hidden>
+        <span data-icon="alert"></span>
+        <div class="grow"><b>There's a chance to find more data</b><span>You just scanned a partition. TizoRecover found everything it could on it, but there's a good chance it finds more deleted data if the whole disk is searched, including the space outside the partitions. It takes longer, but may be worth it.</span></div>
+        <button class="btn" id="more-scan">Scan entire disk</button>
+        <button class="btn" id="more-skip">Skip</button>
+      </div>
       <div class="chips" id="rv-chips">
         <div class="pop-wrap"><button class="fchip" id="chip-show"><span data-icon="sliders"></span><span class="fl">Show</span><span data-icon="chevdown"></span></button>
           <div class="popover" id="pop-show" hidden></div></div>

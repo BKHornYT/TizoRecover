@@ -119,6 +119,7 @@ function duration(s) {
   return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
 }
 const nf = (n) => (n || 0).toLocaleString();
+const ddTime = (s) => (s == null || !isFinite(s) ? "—" : s < 60 ? "<1m" : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
 const plural = (n, one, many = one + "s") => `${nf(n)} ${n === 1 ? one : many}`;
 function ago(t) {
   if (!t) return "";
@@ -1163,6 +1164,7 @@ function resetForScan(driveId, driveDict, mode = S.mode) {
   S.changedSeen = 0;
   S.recovered = new Set();
   S.gpath = [];
+  S.moreSkipped = false;
   S.selected.clear();
   S.current = null;
   S.cat = null;
@@ -1314,12 +1316,12 @@ function renderScan() {
   const name = `“${driveTitle(d).trim()}”`;
   $("#sc-title").textContent = paused() ? `Paused: waiting for ${name}`
     : live ? `Scanning ${name}`
-    : s.state === "done" ? `Found ${plural(S.items.length, "file")} on ${size(total)}`
-    : s.state === "failed" ? "The scan could not run" : `Stopped: ${plural(S.items.length, "file")} found on ${size(total)}`;
+    : s.state === "done" ? `Found ${plural(S.items.length, "file")} / ${size(total)}`
+    : s.state === "failed" ? "The scan could not run" : `Stopped: ${plural(S.items.length, "file")} / ${size(total)}`;
   $("#sc-sub").textContent = userPaused() ? `${plural(S.items.length, "file")} / ${size(total)} - Paused`
     : live
     ? `${p.total ? `${Math.floor(pct)}% complete` : STAGE_LABEL[p.stage] || "Starting"} – ${plural(S.items.length, "file")} / ${size(total)}`
-    : s.state === "done" ? `Scan completed successfully · ${s.mode === "deep" ? "All recovery methods" : "Quick scan"} · ${driveTitle(d).trim()}`
+    : s.state === "done" ? "Scan completed successfully"
     : s.state === "failed" ? "" : `Scan of ${driveTitle(d).trim()} stopped after ${duration(p.elapsed)}. What was found can still be recovered.`;
   $("#sc-progress").hidden = !live;
   $("#sc-bar").style.width = `${p.total ? pct : 0}%`;
@@ -1340,12 +1342,14 @@ function renderScan() {
     const t = $(`.dtile[data-cat="${c}"]`, tiles);
     const n = counts[c] || 0;
     t.classList.toggle("on", n > 0);
-    $("small", t).textContent = n ? `${plural(n, "file")} · ${size(bytes[c])}` : "—";
+    $("small", t).textContent = n ? plural(n, "file") : "—";
+    t.title = n ? `${plural(n, "file")} · ${size(bytes[c])}` : "";
   }
   const sp = currentSpeed();
-  const parts = [`${duration(p.elapsed)} elapsed`];
-  if (live && p.eta != null) parts.push(`${duration(p.eta)} remaining`);
-  if (p.total) parts.push(`${size(p.done)} of ${size(p.total)}`);
+  // Disk Drill's footer ("<1m elapsed, 0h 4m remaining, block 945837 of 15236700"), plus our speed.
+  const parts = [`${ddTime(p.elapsed)} elapsed`];
+  if (live && p.eta != null) parts.push(`${ddTime(p.eta)} remaining`);
+  if (p.total) parts.push(`block ${nf(Math.floor(p.done / 512))} of ${nf(Math.ceil(p.total / 512))}`);
   if (live && sp != null && p.total) parts.push(`${size(sp)}/s`);
   $("#sc-status").textContent = parts.join(", ");
   const note = $("#sc-autosave");
@@ -1388,6 +1392,8 @@ function renderReviewHead() {
   const s = S.scan;
   if (!s) return;
   const d = s.drive || {};
+  const partOnly = s.state === "done" && !d.lost && d.kind !== "image" && d.kind !== "disk" && d.disk >= 0 && !S.moreSkipped;
+  $("#more-banner").hidden = !partOnly;
   const total = (S.shown || []).reduce((a, it) => a + it.size, 0);
   const cat = S.cat === "other*" ? "other" : S.cat;
   $("#rv-title").textContent = S.ext ? S.ext.toUpperCase() : cat ? (cat === "video" ? "Videos" : CAT_LABEL[cat]) : driveTitle(d).trim();
@@ -1405,6 +1411,8 @@ function renderReviewHead() {
   $("#rv-pillbar").style.width = live ? `${pct}%` : "0";
 }
 $("#rv-scanpill").onclick = () => go("scan");
+$("#more-skip").onclick = () => { S.moreSkipped = true; $("#more-banner").hidden = true; };
+$("#more-scan").onclick = () => { const d = S.scan && S.scan.drive; if (d) startScan(`disk:${d.disk}`, "deep"); };
 
 function passesFilters(it) {
   const f = S.filters;

@@ -508,6 +508,9 @@ def main() -> int:
         nav(page, "scan")
         page.wait_for_timeout(200)
         shot("23-dashboard-dark")
+        check("dashboard footer in Disk Drill's words", "elapsed" in page.inner_text("#sc-status") and "block" in page.inner_text("#sc-status"),
+              page.inner_text("#sc-status"))
+        check("done title: N files / size", " / " in page.inner_text("#sc-title"), page.inner_text("#sc-title"))
         nav(page, "review")
         page.wait_for_timeout(300)
         shot("24-review-dark")

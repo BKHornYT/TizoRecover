@@ -24,8 +24,8 @@
   --c-image: #1a73e8;
   --c-video: #ea6a0a;
   --c-audio: #0d9488;
-  --c-document: #7c3aed;
-  --c-archive: #d97706;
+  --c-document: #e11d5a;
+  --c-archive: #9333ea;
   --c-code: #4d7c0f;
   --c-program: #be185d;
   --c-other: #6b7280;
@@ -64,8 +64,8 @@
     --c-image: #4ea1ff;
     --c-video: #ff9a4d;
     --c-audio: #3dd6c6;
-    --c-document: #b89bff;
-    --c-archive: #fbbf24;
+    --c-document: #ff6b96;
+    --c-archive: #c084fc;
     --c-code: #a3e635;
     --c-program: #f9a8d4;
     --c-other: #a1a1aa;
@@ -101,8 +101,8 @@
   --c-image: #4ea1ff;
   --c-video: #ff9a4d;
   --c-audio: #3dd6c6;
-  --c-document: #b89bff;
-  --c-archive: #fbbf24;
+  --c-document: #ff6b96;
+  --c-archive: #c084fc;
   --c-code: #a3e635;
   --c-program: #f9a8d4;
   --c-other: #a1a1aa;
@@ -780,8 +780,8 @@ body { font-size: 14px; }
 .dtile.on[data-tc="image"] { background: linear-gradient(160deg, #3a95ff, #0047e0); }
 .dtile.on[data-tc="video"] { background: linear-gradient(160deg, #ffad33, #ff5a00); }
 .dtile.on[data-tc="audio"] { background: linear-gradient(160deg, #34e3c9, #079a85); }
-.dtile.on[data-tc="document"] { background: linear-gradient(160deg, #b59bff, #6a3df0); }
-.dtile.on[data-tc="archive"] { background: linear-gradient(160deg, #ffcf5c, #e88a00); }
+.dtile.on[data-tc="document"] { background: linear-gradient(160deg, #ff5c8a, #f0124f); }
+.dtile.on[data-tc="archive"] { background: linear-gradient(160deg, #c46bff, #8a12e0); }
 .dtile.on[data-tc="other"] { background: linear-gradient(160deg, #a3aef0, #5866b8); }
 .dash-msgs { display: flex; flex-direction: column; gap: 8px; margin-top: 22px; max-width: 760px; }
 .dash-more { margin-top: 18px; }
@@ -1055,3 +1055,11 @@ body { font-size: 14px; }
 .done-text .muted { color: var(--muted); }
 .done-acts { display: flex; gap: 8px; margin-top: 18px; align-items: center; flex-wrap: wrap; }
 .done-acts .btn svg { width: 16px; height: 16px; }
+
+/* "There's a chance to find more data" (Disk Drill, after a partition scan) */
+.more-banner { display: flex; align-items: center; gap: 16px; margin: 10px 0 2px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.more-banner[hidden] { display: none; }
+.more-banner svg { width: 18px; height: 18px; color: var(--warn); flex: none; align-self: flex-start; margin-top: 2px; }
+.more-banner .grow b { display: block; margin-bottom: 2px; }
+.more-banner .grow span { color: var(--muted); font-size: 13px; }
+.more-banner .btn { white-space: nowrap; }
