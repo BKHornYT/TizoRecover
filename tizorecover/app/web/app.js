@@ -612,29 +612,41 @@ function savedDriveName(dv) {
   const name = dv.label || dv.disk_name || "Drive";
   return dv.letter ? `${dv.letter}:  ${name}` : name;
 }
+// Disk Drill's Recent Sessions: the list on the left, the picked session on the right.
 function renderSaved() {
   const box = $("#saved-list");
+  $("#saved-count").textContent = plural(S.saved.length, "scan session");
   $("#saved-where").textContent = S.savedDir ? `Saved in ${S.savedDir}` : "";
-  if (!S.saved.length) {
-    box.innerHTML = `<div class="dev-empty">${icon("history")}<span>No saved scans yet. They appear here as soon as you scan a drive.</span></div>`;
+  if (S.savedPick != null && !S.saved[S.savedPick]) S.savedPick = null;
+  box.innerHTML = S.saved.length ? S.saved.map((sv, i) => {
+    const dv = sv.drive || {};
+    return `<button class="sess-item ${S.savedPick === i ? "sel" : ""}" data-sv-pick="${i}" title="${esc(sv.path)}">
+      <span class="sess-ico ${dv.removable ? "usb" : ""}">${icon(dv.kind === "image" ? "disc" : dv.removable ? "usb" : "drive")}</span>
+      <span class="t"><b>${esc(savedDriveName(dv))}</b><small>${plural(sv.found, "file")} • ${size(sv.found_bytes || 0)}</small></span></button>`;
+  }).join("") : `<div class="sess-none">No saved scans yet. They appear here as soon as you scan a drive.</div>`;
+  const det = $("#saved-detail");
+  const sv = S.saved[S.savedPick];
+  if (!sv) {
+    det.innerHTML = `<div class="sess-nothing"><h2>Nothing selected</h2><p>Please select a scan session on the left or use the "Open session…" option to add a new one.</p></div>`;
     return;
   }
-  box.innerHTML = S.saved.map((sv, i) => {
-    const dv = sv.drive || {};
-    const here = sv.drive_id
-      ? `<span class="chip ok">Drive plugged in</span>`
-      : `<span class="chip warn" title="Plug the drive in to open this scan">Drive not plugged in</span>`;
-    const disk = dv.disk_name && dv.disk_name !== savedDriveName(dv) ? ` · ${esc(dv.disk_name)}` : "";
-    return `<div class="saved-row">
-      <div class="dev-ico ${dv.removable ? "usb" : ""}">${icon(dv.kind === "image" ? "disc" : dv.removable ? "usb" : "drive")}</div>
-      <div class="t"><b title="${esc(sv.path)}">${esc(savedDriveName(dv))}</b>
-        <small>${esc(savedText(sv))} · ${size(sv.found_bytes || 0)} · ${esc(fsName(sv.filesystem))} · ${size(dv.size || 0)}${disk} ${here}</small></div>
-      <div class="acts">
-        <button class="btn primary sm" data-sv-open="${i}">${sv.state === "done" ? "Open" : "Open / resume"}</button>
-        <button class="btn ghost sm" data-sv-show="${i}" title="Show the file in its folder">${icon("folder")}</button>
-        <button class="btn ghost sm" data-sv-del="${i}" title="Delete this saved scan">${icon("trash")}</button>
-      </div></div>`;
-  }).join("");
+  const dv = sv.drive || {};
+  const when = sv.saved_at ? new Date(sv.saved_at * 1000) : null;
+  const what = sv.mode === "deep" ? "All recovery methods" : "Quick scan";
+  const state = sv.state === "done" ? "" : sv.mode === "deep" ? ` · stopped at ${Math.floor(sv.deep_pct || 0)}%` : " · stopped";
+  det.innerHTML = `<div class="sess-card">
+    <div class="sess-big ${dv.removable ? "usb" : ""}">${icon(dv.kind === "image" ? "disc" : dv.removable ? "usb" : "drive")}</div>
+    <h2>${esc(savedDriveName(dv))}</h2>
+    <div class="sess-found">${plural(sv.found, "file")} on ${size(sv.found_bytes || 0)}</div>
+    <p>Created on ${when ? esc(dateFmt.format(when)) : "?"} (${esc(ago(sv.saved_at))})</p>
+    <p>${esc(savedDriveName(dv))} <span class="muted">${esc(dv.kind === "image" ? "Disk image" : dv.lost ? "Lost partition" : "Logical volume")} · ${esc(fsName(sv.filesystem))} · ${size(dv.size || 0)}</span></p>
+    <p>${what}${state}</p>
+    ${sv.drive_id ? "" : `<p class="sess-warn">${icon("alert")}Plug the drive in to open this scan.</p>`}
+    <div class="sess-acts">
+      <button class="btn primary" data-sv-open="${S.savedPick}">${sv.state === "done" ? "Continue" : "Resume"}</button>
+      <button class="btn" data-sv-show="${S.savedPick}" title="Show the saved scan file">${icon("download")}</button>
+      <button class="btn" data-sv-del="${S.savedPick}" title="Delete this saved scan">${icon("trash")}</button>
+    </div></div>`;
 }
 async function openSavedScan(path) {
   if (running() && !(await ask("Stop the current scan?", "Opening a saved scan stops the one that is running.", "Stop and open"))) return;
@@ -643,7 +655,17 @@ async function openSavedScan(path) {
     resetForScan(r.drive.id, r.drive);
   } catch (e) { toast(e.message); }
 }
-$("#saved-list").addEventListener("click", async (ev) => {
+$("#saved-list").addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-sv-pick]");
+  if (!b) return;
+  S.savedPick = Number(b.dataset.svPick);
+  renderSaved();
+});
+$("#saved-list").addEventListener("dblclick", (ev) => {
+  const b = ev.target.closest("[data-sv-pick]");
+  if (b && S.saved[Number(b.dataset.svPick)]) openSavedScan(S.saved[Number(b.dataset.svPick)].path);
+});
+$("#saved-detail").addEventListener("click", async (ev) => {
   const b = ev.target.closest("button");
   if (!b) return;
   const sv = S.saved[Number(b.dataset.svOpen ?? b.dataset.svShow ?? b.dataset.svDel)];

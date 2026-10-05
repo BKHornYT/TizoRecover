@@ -978,3 +978,38 @@ body { font-size: 14px; }
 .dev-row.disk { cursor: pointer; }
 .dev-row.disk.sel { background: var(--accent-soft); }
 .ctx-h { padding: 6px 12px 4px; color: var(--faint); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+
+/* Recent Sessions, two panes (Disk Drill) */
+#screen-saved { display: flex; flex-direction: column; }
+#screen-saved[hidden] { display: none; }
+.sess { flex: 1; min-height: 0; display: flex; }
+.sess-list { width: 280px; flex: none; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.sess-items { flex: 1; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
+.sess-item { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 0; background: none; border-radius: 8px; text-align: left; cursor: pointer; color: var(--text); }
+.sess-item:hover { background: var(--hover); }
+.sess-item.sel { background: var(--accent-soft); }
+.sess-item .t { display: flex; flex-direction: column; min-width: 0; }
+.sess-item b { font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess-item small { color: var(--muted); font-size: 12px; }
+.sess-ico { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: 8px; background: var(--surface2); color: var(--muted); }
+.sess-ico svg { width: 18px; height: 18px; }
+.sess-none { color: var(--muted); padding: 16px 10px; font-size: 13px; }
+.sess-open { margin: 10px 18px 14px; align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; }
+.sess-open svg { width: 16px; height: 16px; }
+.sess-detail { flex: 1; min-width: 0; display: grid; place-items: center; padding: 24px; overflow: auto; }
+.sess-nothing { text-align: center; max-width: 380px; }
+.sess-nothing h2 { margin: 0 0 6px; font-size: 18px; }
+.sess-nothing p { margin: 0; color: var(--muted); }
+.sess-card { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px; max-width: 460px; }
+.sess-big { width: 120px; height: 140px; border-radius: 10px; background: var(--surface2); border: 1px solid var(--line); display: grid; place-items: center; color: var(--accent); margin-bottom: 18px;
+  clip-path: polygon(0 0, 72% 0, 100% 20%, 100% 100%, 0 100%); }
+.sess-big svg { width: 56px; height: 56px; stroke-width: 1.4; }
+.sess-card h2 { margin: 0; font-size: 28px; font-weight: 650; }
+.sess-found { color: var(--accent); font-size: 22px; margin-bottom: 18px; }
+.sess-card p { margin: 2px 0; }
+.sess-card .muted { color: var(--muted); }
+.sess-warn { color: var(--warn); display: inline-flex; gap: 6px; align-items: center; margin-top: 8px !important; }
+.sess-warn svg { width: 16px; height: 16px; }
+.sess-acts { display: flex; gap: 8px; margin-top: 22px; }
+.sess-acts .btn.primary { min-width: 160px; justify-content: center; }
+.sess-acts .btn svg { width: 16px; height: 16px; }

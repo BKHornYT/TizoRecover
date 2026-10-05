@@ -248,18 +248,19 @@
 
   <!-- ============ saved scans ============ -->
   <section class="screen" id="screen-saved" hidden>
-    <header class="page-head">
-      <div>
-        <h1>Saved scans</h1>
-        <p>Every scan saves itself while it runs. Open one to see its files again, or to carry on where it stopped.</p>
+    <div class="topbar">
+      <span class="tb-count" id="saved-count"></span>
+      <div class="grow"></div>
+      <button class="icon-btn" id="saved-folder" title="Show the folder the scans are saved in"><span data-icon="folder"></span></button>
+    </div>
+    <div class="sess">
+      <div class="sess-list">
+        <div class="sess-items" id="saved-list"></div>
+        <button class="link-btn sess-open" id="saved-other"><span data-icon="pluscircle"></span>Open session…</button>
       </div>
-      <div class="head-actions">
-        <button class="btn ghost" id="saved-folder"><span data-icon="folder"></span>Show folder</button>
-        <button class="btn ghost" id="saved-other"><span data-icon="history"></span>Open a scan file…</button>
-      </div>
-    </header>
-    <div class="saved-list" id="saved-list"></div>
-    <p class="saved-where" id="saved-where"></p>
+      <div class="sess-detail" id="saved-detail"></div>
+    </div>
+    <p class="saved-where" id="saved-where" hidden></p>
   </section>
 
   <!-- ============ fix a drive ============ -->
