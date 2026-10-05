@@ -208,8 +208,9 @@ def carve_range(
     even read), the way PhotoRec does it: a photo embedded in a video is part
     of the video, not a file of its own, and a long video costs no searching.
 
-    ``on_record(offset, bytes)`` hears about every NTFS file record
-    (``FILE``) in the space searched, with at least 4 KiB from its start;
+    ``on_record(offset, bytes)`` hears about every file-system record (an
+    NTFS ``FILE`` record, a FAT folder's first cluster) in the space searched,
+    with at least 4 KiB from its start;
     those are reported even inside a carved file's bytes that were read.
     """
     wanted = tuple(formats) if formats is not None else FORMATS

@@ -247,9 +247,15 @@ def read_clusters(src, fat: FatInfo, chain: list[int], size: int) -> tuple[bytes
     return bytes(out), gaps
 
 
-def _decode_short(raw: bytes) -> str:
-    base = raw[:8].decode("ascii", "replace").rstrip()
-    ext = raw[8:11].decode("ascii", "replace").rstrip()
+def _decode_short(raw: bytes, case: int = 0) -> str:
+    """An 8.3 name. ``case`` is byte 0x0C of the entry: Windows sets 0x08 for a lower-case name and
+    0x10 for a lower-case extension instead of writing a long name ("IMG_3000.png")."""
+    base = raw[:8].decode("cp437", "replace").rstrip()
+    ext = raw[8:11].decode("cp437", "replace").rstrip()
+    if case & 0x08:
+        base = base.lower()
+    if case & 0x10:
+        ext = ext.lower()
     return f"{base}.{ext}" if ext else base
 
 
@@ -327,10 +333,11 @@ def parse_dir_entries(raw: bytes) -> list[DirEntry]:
         size = struct.unpack_from("<I", slot, 0x1C)[0]
         modified = dos_time(struct.unpack_from("<H", slot, 0x18)[0],
                             struct.unpack_from("<H", slot, 0x16)[0])
+        short = _decode_short(display, slot[0x0C])
         entries.append(DirEntry(
             offset=pos, deleted=deleted,
-            name=name or _decode_short(display),
-            short_name=_decode_short(display),
+            name=name or short,
+            short_name=short,
             attr=attr, cluster=cluster, size=size, is_dir=bool(attr & DIR_ATTR),
             modified=modified,
         ))
@@ -472,3 +479,150 @@ def _extension(name: str) -> str:
     if "." in name[1:]:
         return name.rsplit(".", 1)[1].lower()[:16]
     return ""
+
+
+# The first entry of every FAT subdirectory: "." (dot, ten spaces) with the directory bit.
+DIR_MAGIC = b".          \x10"
+
+
+def _plausible_slot(slot: bytes) -> bool:
+    """Could these 32 bytes be a directory entry? (Used to tell where a lost folder's clusters end.)"""
+    first, attr = slot[0], slot[0x0B]
+    if first == 0x00:
+        return True
+    if attr == ATTR_LFN:
+        return slot[0x0C] == 0 and slot[0x1A:0x1C] == b"\x00\x00"
+    if attr & 0xC0:
+        return False
+    name = slot[1:11]
+    return (first >= 0x20 or first == 0x05) and all(b >= 0x20 and b not in b'"*+,/:;<=>?[\\]|' for b in name)
+
+
+class LooseDirs:
+    """Folders the deep scan finds in free space (TestDisk's way; Disk Drill's "Orphans").
+
+    A deleted folder's clusters, or every folder of a volume that was quick-formatted, stay on the
+    disk with their entries intact: names (long ones too), sizes, dates and first clusters. Each
+    folder's first cluster starts with "." and ".." entries, so the free-space pass can spot them;
+    "." holds the folder's own cluster number (which proves it lines up with today's geometry) and
+    ".." its parent's. Folder names come from the parent folders that were found as well; a folder
+    whose parent is gone becomes "Orphans/Lost<cluster>".
+    """
+
+    MAX = 500_000
+    MAX_CLUSTERS = 256                   # one lost folder: at most this many clusters of entries
+
+    def __init__(self, src, fat: FatInfo) -> None:
+        self.fat = fat
+        self.table = load_table(src, fat)
+        self.dirs: dict[int, int] = {}   # cluster -> parent cluster (0 = the root)
+        self.offsets: list[int] = []
+        self.mismatched = 0
+
+    def add(self, offset: int, raw: bytes) -> bool:
+        fat = self.fat
+        if offset % fat.bytes_per_sector or len(raw) < 64 or raw[:12] != DIR_MAGIC:
+            return False
+        if raw[32:43] != b"..         " or not raw[43] & DIR_ATTR:
+            return False
+        cluster = struct.unpack_from("<H", raw, 0x1A)[0] | (struct.unpack_from("<H", raw, 0x14)[0] << 16)
+        parent = struct.unpack_from("<H", raw, 32 + 0x1A)[0] | (struct.unpack_from("<H", raw, 32 + 0x14)[0] << 16)
+        if cluster < 2 or cluster >= fat.cluster_count + 2 or fat.cluster_offset(cluster) != offset:
+            self.mismatched += 1     # from a volume with another layout (reformatted differently)
+            return False
+        if cluster in self.dirs or len(self.dirs) >= self.MAX:
+            return False
+        self.dirs[cluster] = parent
+        self.offsets.append(offset)
+        return True
+
+    def __len__(self) -> int:
+        return len(self.dirs)
+
+    def _entries(self, src, cluster: int) -> list[DirEntry]:
+        """A lost folder's entries: its first cluster, then the free clusters after it while they still
+        read as entries (its chain was freed, so this is the same guess undelete tools make for files)."""
+        fat = self.fat
+        raw = bytearray()
+        c = cluster
+        for _ in range(self.MAX_CLUSTERS):
+            if c >= fat.cluster_count + 2:
+                break
+            if c != cluster and c < len(self.table) and self.table[c] != 0:
+                c += 1                   # in use today: skip it, as deleted_chain does
+                continue
+            chunk = src.at(fat.cluster_offset(c), fat.cluster_size)
+            if len(chunk) < 32:
+                break
+            if c != cluster and not all(_plausible_slot(chunk[i:i + 32]) for i in range(0, min(len(chunk), 256), 32)):
+                break
+            raw += chunk
+            if any(chunk[i] == 0 for i in range(0, len(chunk), 32)):
+                break                    # an end-of-folder marker
+            c += 1
+        return parse_dir_entries(bytes(raw))
+
+    def candidates(self, src, volume: str,
+                   should_stop: Callable[[], bool] | None = None) -> Iterator[FileCandidate]:
+        fat = self.fat
+        listing: dict[int, list[DirEntry]] = {}
+        names: dict[int, str] = {}
+        for cluster in self.dirs:
+            if should_stop is not None and should_stop():
+                return
+            entries = self._entries(src, cluster)
+            listing[cluster] = entries
+            for e in entries:
+                if e.is_dir and e.cluster >= 2 and e.short_name not in (".", ".."):
+                    names.setdefault(e.cluster, _sanitise(e.name))
+        root = fat.root_cluster or 0
+
+        def path_of(cluster: int) -> str:
+            parts: list[str] = []
+            seen: set[int] = set()
+            c = cluster
+            while c not in seen:
+                seen.add(c)
+                parts.append(names.get(c) or f"Lost{c}")
+                parent = self.dirs.get(c)
+                if parent is None:
+                    break
+                if parent in (0, root):                        # its parent was the root
+                    top = list(reversed(parts))
+                    return "/".join(["Orphans", *top] if top[0].startswith("Lost") else top)
+                if parent not in self.dirs:
+                    if parent in names:                        # named by a folder we found, but not found itself
+                        parts.append(names[parent])
+                    else:
+                        parts.append(f"Lost{parent}")
+                    break
+                c = parent
+            return "/".join(["Orphans", *reversed(parts)])
+
+        for cluster, entries in listing.items():
+            folder = path_of(cluster)
+            for e in entries:
+                if should_stop is not None and should_stop():
+                    return
+                if e.is_dir or e.cluster < 2 or e.size == 0 or e.short_name in (".", ".."):
+                    continue
+                chain, guessed = deleted_chain(src, fat, e.cluster, e.size, self.table)
+                if not chain:
+                    continue
+                need = max(1, -(-e.size // fat.cluster_size))
+                short = len(chain) < need
+                size = min(e.size, len(chain) * fat.cluster_size)
+                name = _sanitise(e.name)
+                extents = chain_extents(fat, chain, size)
+                yield FileCandidate(
+                    ext=_extension(name), size=size, data_offset=-1, strategy=Strategy.FAT, name=name,
+                    original_path=f"{folder}/{name}", verdict=Verdict.PARTIAL if short else Verdict.VALID,
+                    confidence=0.5 if short else 0.7,
+                    reasons=[f"entry in a lost folder (cluster {cluster}) found in free space by the deep scan",
+                             "entry marked deleted (0xE5)" if e.deleted else "entry still in place in that folder",
+                             "file assumed to continue through the free clusters after its first one"],
+                    volume=volume, fragment_count=len(extents) if len(extents) > 1 else 1,
+                    metadata={"chain": chain, "extents": extents, "cluster_size": fat.cluster_size,
+                              "modified": e.modified, "chain_guessed": guessed, "folder_deleted": True,
+                              "live": False, "loose_record": True, "lost_dir": cluster},
+                )

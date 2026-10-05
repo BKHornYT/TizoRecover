@@ -688,6 +688,13 @@ class ScanJob:
                         self.loose.add(off, self.src.at(off, size))
             if self.loose is not None:
                 on_record = self.loose.add
+        elif self.filesystem in ("fat", "fat32", "fat12", "fat16"):
+            # Lost folders (TestDisk's method): their "." / ".." first entries lie in free space.
+            if self.loose is None:
+                info = fat_fs.find_fat(self.src)
+                self.loose = fat_fs.LooseDirs(self.src, info) if info is not None else None
+            if self.loose is not None:
+                on_record = self.loose.add
         for offset, length in ranges:
             if stop():
                 break

@@ -1,0 +1,242 @@
+{
+ "DCIM/100MEDIA/IMG_3000.png": {
+  "size": 3698,
+  "sha256": "d7644258e1cd2bd034e1ce6342db9cb0da6ea17d8c964839df5f203dd28a1849"
+ },
+ "DCIM/100MEDIA/IMG_3001.png": {
+  "size": 4005,
+  "sha256": "20b0a7b8917ad6d2520c4c1078f0a6c7cfb952dd6d11ef929e2164319099bc19"
+ },
+ "DCIM/100MEDIA/IMG_3002.png": {
+  "size": 4324,
+  "sha256": "587bfdb47d57ea627f9e7e69e706e7a5e160ba4e9f38fabe77724d81147464df"
+ },
+ "DCIM/100MEDIA/IMG_3003.png": {
+  "size": 4655,
+  "sha256": "5a3384d6fd854de7503b35e2e3897339e13decbebc419adc6f81d721a358e575"
+ },
+ "DCIM/100MEDIA/IMG_3004.png": {
+  "size": 4998,
+  "sha256": "d991331d41489d0555dd62f94c2e98d26e4c22615be8a4cc51ea8866fcf085b8"
+ },
+ "DCIM/100MEDIA/IMG_3005.png": {
+  "size": 5353,
+  "sha256": "65cb6d32254d5fba92849e39094b2acbc96d9523b3dad02c4a643b167bed8906"
+ },
+ "DCIM/100MEDIA/IMG_3006.png": {
+  "size": 5720,
+  "sha256": "b889d1c273c6fbb8d235b640083a6bf476d1224f0cd46e1399df95b604f5c48a"
+ },
+ "DCIM/100MEDIA/IMG_3007.png": {
+  "size": 6099,
+  "sha256": "c3c54d09e21fc01119c15038004a651d7a54e5710c0a8dad8a45b7c93c46fd72"
+ },
+ "DCIM/100MEDIA/IMG_3008.png": {
+  "size": 6490,
+  "sha256": "a9dc6680599e409e4167acb623baa20b4d7860b3c8b805778d1cb98f7080a5e3"
+ },
+ "DCIM/100MEDIA/IMG_3009.png": {
+  "size": 6893,
+  "sha256": "84fc95d181153d60696c6dd6a132ea7cc9db0f4f2a858733bd6f6ea0b01c4549"
+ },
+ "DCIM/100MEDIA/IMG_3010.png": {
+  "size": 7308,
+  "sha256": "1b97366ac25749f73a1f46ca59f1e711d394bced22931a3dea5b917ca1f31fc2"
+ },
+ "DCIM/100MEDIA/IMG_3011.png": {
+  "size": 7735,
+  "sha256": "3b97fcae77b9dbc769d56d5446310de346fe49ffef1998184718b2015b274a2c"
+ },
+ "DCIM/100MEDIA/IMG_3012.png": {
+  "size": 8174,
+  "sha256": "b07b2b0d9f1a1920a97c86b63e279dd2b95bbe9f83cea252e14d82d86c2f34b7"
+ },
+ "DCIM/100MEDIA/IMG_3013.png": {
+  "size": 8625,
+  "sha256": "b8a9f97f5750b96c1d220cc52d200967485b8bb5e289d3a1f57aef8a671ec749"
+ },
+ "DCIM/100MEDIA/IMG_3014.png": {
+  "size": 9088,
+  "sha256": "e6ecaf52fdb3e0896163c583e7fd0555f22e9864aada24f4cebf6ad83c383841"
+ },
+ "DCIM/100MEDIA/IMG_3015.png": {
+  "size": 9563,
+  "sha256": "a0695934e9a96f7dc6e6db3692d94bdf2bfe1a54b5146c34eee3add6b2bf538f"
+ },
+ "DCIM/100MEDIA/IMG_3016.png": {
+  "size": 10050,
+  "sha256": "8e453b0b86c3a754a04483c8b91a626b1e6dbcdd56f691e62d0c58aff9f8049a"
+ },
+ "DCIM/100MEDIA/IMG_3017.png": {
+  "size": 10549,
+  "sha256": "75c5861102ede816bc9641fe7936af13fd3c312b1a6ce493748d3422296ce015"
+ },
+ "DCIM/100MEDIA/IMG_3018.png": {
+  "size": 11060,
+  "sha256": "968692558c08dce8f2652d931283d091d1ab8ed13c5f8bfc7eab53cd48bb3c9e"
+ },
+ "DCIM/100MEDIA/IMG_3019.png": {
+  "size": 11583,
+  "sha256": "79dda9b686b258b2ad70ff4bc37ee09a9edf44f896fd6bb8e60d2b12e2934e6c"
+ },
+ "DCIM/100MEDIA/IMG_3020.png": {
+  "size": 12118,
+  "sha256": "711abf5d872dad4d5ac53dc74035fa744b25e16f3b709c5dd5383343163bd947"
+ },
+ "DCIM/100MEDIA/IMG_3021.png": {
+  "size": 12665,
+  "sha256": "a733fe7d3c4460818d22dcd98169c77a56c9daca072a5d54c5f2e8b48d82c77f"
+ },
+ "DCIM/100MEDIA/IMG_3022.png": {
+  "size": 13224,
+  "sha256": "ebccb95b2fd382905ead193bb518543cd7c346bdb3ca267ac84d77914de71650"
+ },
+ "DCIM/100MEDIA/IMG_3023.png": {
+  "size": 13795,
+  "sha256": "6f1b28fb4bbcd1db886aa63c66a41717354189c60b43ed1411a3a04e8a37b0a7"
+ },
+ "DCIM/100MEDIA/IMG_3024.png": {
+  "size": 14378,
+  "sha256": "8b125b7b31c0acf16ae477a643c6d0596a39afbc9db53ee746da3d8a799b196b"
+ },
+ "DCIM/100MEDIA/IMG_3025.png": {
+  "size": 14973,
+  "sha256": "21c628d825b5addb489f4f09faea062c1e2972ce0e2a5cc9d3d6a67889d477e0"
+ },
+ "DCIM/100MEDIA/IMG_3026.png": {
+  "size": 15580,
+  "sha256": "50546bbe23b38733804ed77344789b21df8f6513dc86826f37c0f9590fc230b8"
+ },
+ "DCIM/100MEDIA/IMG_3027.png": {
+  "size": 16199,
+  "sha256": "4a64fa788154fd6ba70593b085158e24e51010282e74a1dc82801746b3ce7312"
+ },
+ "DCIM/100MEDIA/IMG_3028.png": {
+  "size": 16830,
+  "sha256": "c040d3a01761f2e1329374903091e7651b04d116c71ea15935f73763724f4865"
+ },
+ "DCIM/100MEDIA/IMG_3029.png": {
+  "size": 17473,
+  "sha256": "ee47d7a49acec88f463814198e56b1e017e01da53e74aa8680d1f0a8365c55ae"
+ },
+ "DCIM/100MEDIA/IMG_3030.png": {
+  "size": 18128,
+  "sha256": "4dfdd2762124a9e3b1f4aa00e9d5c59e1fb602ac4be48f4bebeddcb624bded69"
+ },
+ "DCIM/100MEDIA/IMG_3031.png": {
+  "size": 18795,
+  "sha256": "98af253d2f29e47f4a1221480730356475fc3187db03cba2d62d800f701f048a"
+ },
+ "DCIM/100MEDIA/IMG_3032.png": {
+  "size": 19474,
+  "sha256": "8a8194a2cfd994b5216a70ab75ed1700fc5ca939d2b8f538bdfc7d76153b0cde"
+ },
+ "DCIM/100MEDIA/IMG_3033.png": {
+  "size": 20165,
+  "sha256": "d7c3986123cc0cc0ceedf7713f5e69c2422c25b097992888ebfff3fa1e7da127"
+ },
+ "DCIM/100MEDIA/IMG_3034.png": {
+  "size": 20868,
+  "sha256": "6c1f5eeaae6f01076b2401094020b0138133abc0f2912959825a3dd67bb0ba84"
+ },
+ "DCIM/100MEDIA/IMG_3035.png": {
+  "size": 21583,
+  "sha256": "89d1c60d86eac7d1e0900f348cf5c1e3abb64cc3e6b5eaf9750be5418f0745a2"
+ },
+ "DCIM/100MEDIA/IMG_3036.png": {
+  "size": 22310,
+  "sha256": "deaa46613bcfcfe15fa7892aafaf2675859eac1d5aaf61ea95f5b5f811d57382"
+ },
+ "DCIM/100MEDIA/IMG_3037.png": {
+  "size": 23049,
+  "sha256": "d2423ead956f178a06441befbd4f103dff4048380819fc55dde0fafda35303ad"
+ },
+ "DCIM/100MEDIA/IMG_3038.png": {
+  "size": 23800,
+  "sha256": "5b54495404246a16e3d02ded23bd7a1cc6652d96bb5f3f627d52d1666ebf9159"
+ },
+ "DCIM/100MEDIA/IMG_3039.png": {
+  "size": 24563,
+  "sha256": "d2da4662c6250d1dbac25e611ae8ea3f06296db734a701a8a9a36e57ba82de06"
+ },
+ "Documents/Work/Quarterly report 00.dat": {
+  "size": 5000,
+  "sha256": "e1bd192aedc24fa41678a0165456042c27d86bf7211dba5128dc918e60eb14bf"
+ },
+ "Documents/Work/Quarterly report 01.dat": {
+  "size": 6700,
+  "sha256": "ec67f17132046037b539ad8fb5c0bb6784508d0c00ccb7a91fb0ebd35d75effa"
+ },
+ "Documents/Work/Quarterly report 02.dat": {
+  "size": 8400,
+  "sha256": "63b0d3dfdd36fd940a57fc574d73290a8f9ea7bbde8dbb3666e89c63c63f1d4a"
+ },
+ "Documents/Work/Quarterly report 03.dat": {
+  "size": 10100,
+  "sha256": "1986af53f823f2028a37400271ed3ecc5bf58872fad655fc2c9f37488747d43d"
+ },
+ "Documents/Work/Quarterly report 04.dat": {
+  "size": 11800,
+  "sha256": "39f8a4a86e941a171db51c3fb396b80b76d184d364e05038b8cde663afcc8cf8"
+ },
+ "Documents/Work/Quarterly report 05.dat": {
+  "size": 13500,
+  "sha256": "109c6b0b2f7b98ee352a2096bb39fbe812232285c115f980d280aab9f3da1263"
+ },
+ "Documents/Work/Quarterly report 06.dat": {
+  "size": 15200,
+  "sha256": "479185a5fc31fbc524ab7752e87e04279337dd34a15965edc7e7ec7bc58843b5"
+ },
+ "Documents/Work/Quarterly report 07.dat": {
+  "size": 16900,
+  "sha256": "201075728f0570f760d8978bc3c91599d815f321bf755422a2bae9f08081f36e"
+ },
+ "Documents/Work/Quarterly report 08.dat": {
+  "size": 18600,
+  "sha256": "dce06043259f8dc91f257b7a50a590e53e3ae9518aa23ce215a8be7ecaa78916"
+ },
+ "Documents/Work/Quarterly report 09.dat": {
+  "size": 20300,
+  "sha256": "52bb2f4e46dd0dd001ab578f59d42c42ee91c3a95090c2a43c17734090737cdc"
+ },
+ "Documents/Work/Quarterly report 10.dat": {
+  "size": 22000,
+  "sha256": "4b18829adacd859faae2b902019c1b7a8761f0d0e1e71e9da75f03bdb2943d12"
+ },
+ "Documents/Work/Quarterly report 11.dat": {
+  "size": 23700,
+  "sha256": "fef3a90bd8b9380c12ac1cf7e272dfd84824e829cecc3526e29a9a880762061b"
+ },
+ "Documents/Work/Quarterly report 12.dat": {
+  "size": 25400,
+  "sha256": "b8ccebac1b12f91b0db2d09f79c1ff681be06ac59175fcb0a517dc9cb5788a3c"
+ },
+ "Documents/Work/Quarterly report 13.dat": {
+  "size": 27100,
+  "sha256": "7863e158aa444d9e7ee1982c253987e3d93e09242af84a8636caabf9f323f9c2"
+ },
+ "Documents/Work/Quarterly report 14.dat": {
+  "size": 28800,
+  "sha256": "3aea9c920adf0a7d7e8a2c96721f56ff29c1e2d3fa1efbb9d3aa25b3068c2cd9"
+ },
+ "Music/Track 1.dat": {
+  "size": 60000,
+  "sha256": "391d3c71fa096ecc190f23f774e21d70ff54ef9731b12cc55cc7f03fde3f34fd"
+ },
+ "Music/Track 2.dat": {
+  "size": 69000,
+  "sha256": "09853f0797b9863d46692e862831a052517ad75b8efe0b1ed94201855cf20088"
+ },
+ "Music/Track 3.dat": {
+  "size": 78000,
+  "sha256": "a486f07fcfe9ecf87c08a827391661d6e7e7c3c5dff4e26003e3a79d2583b5b1"
+ },
+ "Music/Track 4.dat": {
+  "size": 87000,
+  "sha256": "109ccc72767bbd3865460fb7b7c2ed7074060d768807ee0c6db250ec297326fa"
+ },
+ "Music/Track 5.dat": {
+  "size": 96000,
+  "sha256": "729deee02a1c7b113699cc9c2382c28bb2205ba289c863bd6d217db9619485a2"
+ }
+}

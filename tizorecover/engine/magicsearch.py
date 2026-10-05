@@ -24,6 +24,7 @@ from multiprocessing import get_context, shared_memory
 
 from tizorecover.engine.formats import BY_MAGIC, MAX_MAGIC as _MAX_FORMAT_MAGIC
 from tizorecover.engine.fs.ntfs import RECORD_MAGICS
+from tizorecover.engine.fs.fat import DIR_MAGIC
 
 # Below this a chunk is searched in-process: shipping it costs more than it saves.
 PARALLEL_MIN = 1 << 20
@@ -56,7 +57,7 @@ def _trie_pattern(words: list[bytes]) -> bytes:
 
 
 # File-system records the deep scan also wants to hear about (see carver's on_record).
-EXTRA_MAGICS = tuple(RECORD_MAGICS)
+EXTRA_MAGICS = (*RECORD_MAGICS, DIR_MAGIC)
 ALL_MAGICS = list(BY_MAGIC) + [m for m in EXTRA_MAGICS if m not in BY_MAGIC]
 MAX_MAGIC = max(_MAX_FORMAT_MAGIC, *(len(m) for m in EXTRA_MAGICS))
 MAGIC_RE = re.compile(_trie_pattern(ALL_MAGICS))
