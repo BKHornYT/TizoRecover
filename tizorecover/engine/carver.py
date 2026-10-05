@@ -25,6 +25,7 @@ from tizorecover.engine.results import FileCandidate, Strategy, Verdict
 
 MIN_SIZE = 8
 RECORD_READ = 4096                 # bytes handed to on_record: the largest MFT record size
+WALK_CACHE_BLOCKS = 128            # 4 MiB blocks the carver keeps (512 MiB): a file walked ahead is not read again
 HEARTBEAT = 16
 
 
@@ -102,7 +103,7 @@ _RECORD_MAGICS = frozenset(EXTRA_MAGICS)
 
 
 def _header_hits(buf: bytes, buf_off: int, formats: set[Format],
-                 records: bool = False) -> Iterator[tuple[int, int, Format | None]]:
+                 records: bool = False, spans: list[tuple[int, int]] | None = None) -> Iterator[tuple[int, int, Format | None]]:
     """Every (magic index, file offset, format) whose magic is in ``buf``, in disk order.
 
     One regex pass finds all magics at C speed (on several cores, see
@@ -110,7 +111,7 @@ def _header_hits(buf: bytes, buf_off: int, formats: set[Format],
     the format's in-memory ``quick`` check, so the common false alarms (an
     ``MZ`` or an MPEG frame sync inside some video) never cost a disk read.
     """
-    for idx, stop in find_magics(buf):
+    for idx, stop in (spans if spans is not None else find_magics(buf)):
         magic = bytes(buf[idx:stop])
         if records and magic in _RECORD_MAGICS:
             yield idx, buf_off + idx, None         # a file-system record, not a file
@@ -135,58 +136,161 @@ class CachedSource:
     BLOCK = 1 << 20
     KEEP = 6
 
-    def __init__(self, src) -> None:
+    def __init__(self, src, keep: int | None = None, block: int | None = None) -> None:
         self._src = src
+        self.BLOCK = block or self.BLOCK
         self.size = src.size
+        self.keep = keep or self.KEEP
         self._blocks: dict[int, bytes] = {}
+
+    def _remember(self, index: int, data: bytes) -> None:
+        if index in self._blocks:
+            self._blocks.pop(index)
+        elif len(self._blocks) >= self.keep:
+            self._blocks.pop(next(iter(self._blocks)))
+        self._blocks[index] = data
+
+    pending = None                       # set by _Prefetch: a queued read covering an offset, if any
 
     def _block(self, index: int) -> bytes:
         got = self._blocks.get(index)
         if got is None:
-            if len(self._blocks) >= self.KEEP:
-                self._blocks.pop(next(iter(self._blocks)))
+            if self.pending is not None:
+                hit = self.pending(index * self.BLOCK)
+                if hit is not None:
+                    self.feed(*hit)
+                    got = self._blocks.get(index)
+                    if got is not None:
+                        return got
             got = self._src.at(index * self.BLOCK, self.BLOCK)
-            self._blocks[index] = got
+            self._remember(index, got)
         else:
             self._blocks[index] = self._blocks.pop(index)  # most recently used last
         return got
+
+    def feed(self, offset: int, data: bytes) -> None:
+        """Keep the whole blocks inside ``data`` (read at ``offset`` by someone else): no second read."""
+        first = -(-offset // self.BLOCK)
+        last = (offset + len(data)) // self.BLOCK
+        for i in range(first, last):
+            if i not in self._blocks:
+                start = i * self.BLOCK - offset
+                self._remember(i, bytes(data[start:start + self.BLOCK]))
+
+    def span(self, offset: int, length: int) -> bytes | None:
+        """``length`` bytes at ``offset`` if every block is already here, else None (nothing is read)."""
+        if length <= 0:
+            return b""
+        first, last = offset // self.BLOCK, (offset + length - 1) // self.BLOCK
+        if any(i not in self._blocks for i in range(first, last + 1)):
+            return None
+        return self._join(offset, length, first, last)
+
+    def _join(self, offset: int, length: int, first: int, last: int) -> bytes:
+        start = offset - first * self.BLOCK
+        if first == last:
+            return self._block(first)[start:start + length]
+        parts = [self._block(first)[start:]]
+        for i in range(first + 1, last):
+            parts.append(self._block(i))
+        parts.append(self._block(last)[:offset + length - last * self.BLOCK])
+        return b"".join(parts)
 
     def at(self, offset: int, length: int) -> bytes:
         if offset < 0 or length <= 0 or offset >= self.size:
             return b""
         length = min(length, self.size - offset)
-        if length > 2 * self.BLOCK:
-            return self._src.at(offset, length)
         first, last = offset // self.BLOCK, (offset + length - 1) // self.BLOCK
-        if first == last:
-            start = offset - first * self.BLOCK
-            return self._block(first)[start:start + length]
-        data = b"".join(self._block(i) for i in range(first, last + 1))
-        start = offset - first * self.BLOCK
-        return data[start:start + length]
+        if last - first > 2:
+            got = self.span(offset, length)
+            return got if got is not None else self._src.at(offset, length)
+        return self._join(offset, length, first, last)
 
 
 class _Prefetch:
-    """Reads the next chunk on a helper thread while this one is searched."""
+    """Keeps the next chunks coming on a helper thread while this one is searched.
 
-    def __init__(self, src) -> None:
+    ``DEPTH`` reads are queued so the drive never waits for the search; what the
+    cache already holds (a file check read it) is not asked for again, and a
+    file check that needs bytes already on their way waits for that read
+    instead of starting a second one: a USB stick serves one stream well, two
+    badly.
+    """
+
+    DEPTH = 2
+    REACH = 64                                   # chunks a file check may pull ahead (512 MiB)
+
+    def __init__(self, src, cache: "CachedSource | None" = None) -> None:
         self._src = src
+        self._cache = cache
+        self._grid: tuple[int, int, int] | None = None   # (chunk step, read size, end) of the main pass
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tizo-read")
-        self._next: tuple[int, int, Future] | None = None
+        self._queue: list[tuple[int, int, Future]] = []
+        if cache is not None:
+            cache.pending = self.pending
+
+    def pending(self, offset: int) -> tuple[int, bytes] | None:
+        """(start, bytes) of a queued read that covers ``offset``, waiting for it if needed.
+
+        A file check reaching past the queue extends it, in the main pass's own chunks, so its bytes
+        come in the one sequential stream and the main pass finds them queued instead of reading again.
+        """
+        for pos, want, fut in self._queue:
+            if pos <= offset < pos + want:
+                return pos, fut.result()
+        if self._grid is None or not self._queue:
+            return None
+        step, want, end = self._grid
+        nxt = self._queue[-1][0] + step
+        if not nxt <= offset < end or (offset - nxt) // step >= self.REACH:
+            return None
+        while nxt <= offset and nxt < end:
+            w = min(want, end - nxt)
+            self._queue.append((nxt, w, self._pool.submit(self._src.at, nxt, w)))
+            nxt += step
+        pos, w, fut = self._queue[-1]
+        return (pos, fut.result()) if pos <= offset < pos + w else None
 
     def get(self, pos: int, want: int) -> bytes:
-        nxt = self._next
-        self._next = None
-        if nxt is not None and nxt[0] == pos and nxt[1] == want:
-            return nxt[2].result()
+        while self._queue and self._queue[0][0] < pos:
+            self._queue.pop(0)                    # passed over (a found file was jumped)
+        if self._queue and self._queue[0][0] == pos and self._queue[0][1] == want:
+            return self._queue.pop(0)[2].result()
+        self._queue.clear()
+        if self._cache is not None:
+            got = self._cache.span(pos, want)
+            if got is not None and len(got) == want:
+                return got
         return self._src.at(pos, want)
 
-    def ahead(self, pos: int, want: int) -> None:
-        if want > 0:
-            self._next = (pos, want, self._pool.submit(self._src.at, pos, want))
+    def ahead(self, pos: int, want: int, step: int | None = None, end: int | None = None) -> None:
+        """Queue the read at ``pos`` and, when ``step``/``end`` are given, the ones after it up to DEPTH."""
+        plan = [(pos, want)]
+        if step is not None and end is not None:
+            self._grid = (step, want, end)
+            nxt = pos + step
+            while len(plan) < self.DEPTH and nxt < end:
+                plan.append((nxt, min(want, end - nxt)))
+                nxt += step
+        for p, w in plan:
+            if w <= 0 or any(q[0] == p for q in self._queue):
+                continue
+            if self._cache is not None and self._cache.span(p, w) is not None:
+                continue                         # a file check already read it
+            self._queue.append((p, w, self._pool.submit(self._src.at, p, w)))
+
+    def queued(self, pos: int) -> Future | None:
+        """The read queued at ``pos``, if any (to start searching it as soon as it lands)."""
+        return next((fut for p, _w, fut in self._queue if p == pos), None)
 
     def close(self) -> None:
         self._pool.shutdown(wait=True, cancel_futures=True)
+
+
+def carve_cache(src) -> "CachedSource":
+    """The carver's cache: 512 MiB in 4 MiB reads. Pass the same one to ``carve_range`` and use it for
+    whatever else reads the files it finds (naming, checks), and nothing is read twice."""
+    return CachedSource(src, keep=WALK_CACHE_BLOCKS, block=4 << 20)
 
 
 def carve_range(
@@ -203,6 +307,7 @@ def carve_range(
     on_record: Callable[[int, bytes], None] | None = None,
     on_chunk: Callable[[int, bytes, int], None] | None = None,
     align: tuple[int, int] | None = None,
+    cache: "CachedSource | None" = None,
 ) -> Iterator[FileCandidate]:
     """Forward-carve every recognisable file in ``[start, end)``.
 
@@ -228,9 +333,19 @@ def carve_range(
     pos = start
     skip_until = start
     pulses = 0
-    reader = _Prefetch(src)
-    walk_src = CachedSource(src)
+    # One cache for the main pass and the format walkers: what one reads, the other never reads again.
+    walk_src = cache or carve_cache(src)
+    reader = _Prefetch(src, walk_src)
     read_claimed = on_record is not None or on_chunk is not None or align is not None
+    # The magic search of the next chunk runs while this chunk's files are checked (two buffers in magicsearch).
+    searcher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tizo-search")
+    searches: dict[int, Future] = {}
+
+    def search_later(at: int) -> None:
+        fut = reader.queued(at)
+        if fut is None or at in searches:
+            return
+        searches[at] = searcher.submit(lambda f=fut: None if _blank(f.result()) else find_magics(f.result()))
 
     def at_cluster(offset: int) -> bool:
         return align is not None and offset >= align[1] and (offset - align[1]) % align[0] == 0
@@ -266,19 +381,26 @@ def carve_range(
                 if progress is not None:
                     progress(jump)
                 continue
-            step = min(chunk, (min(skip_until, end) if claimed else end) - pos)
+            # A fixed grid of chunks (claimed or not): the reads queued ahead always line up with what comes next.
+            step = min(chunk, end - pos)
             want = min(step + overlap, end - pos)
             buf = reader.get(pos, want)
             if not buf:
                 return
+            walk_src.feed(pos, buf)
             if pos + step < end:
-                reader.ahead(pos + step, min(chunk + overlap, end - pos - step))
+                reader.ahead(pos + step, min(chunk + overlap, end - pos - step), chunk, end)
+                search_later(pos + step)
+            pre = searches.pop(pos, None)
+            spans = pre.result() if pre is not None else None
+            for old in [k for k in searches if k < pos]:
+                searches.pop(old)
             if on_chunk is not None:
                 on_chunk(pos, buf, step)
             # Empty space (zeros, or 0xFF on erased flash) holds no headers; one
             # comparison skips it at memory speed instead of a search.
             if not _blank(buf):
-                for idx, offset, fmt in _header_hits(buf, pos, wanted_set, on_record is not None):
+                for idx, offset, fmt in _header_hits(buf, pos, wanted_set, on_record is not None, spans):
                     if idx >= step and pos + step < end:
                         continue                         # seen again, whole, in the next chunk
                     if fmt is None:
@@ -315,6 +437,7 @@ def carve_range(
             if len(buf) < want:
                 return
     finally:
+        searcher.shutdown(wait=True, cancel_futures=True)
         reader.close()
 
 

@@ -89,9 +89,10 @@ _attached: dict[str, shared_memory.SharedMemory] = {}
 def _worker_search(name: str, length: int, start: int, stop: int) -> list[tuple[int, int]]:
     shm = _attached.get(name)
     if shm is None:
-        for old in _attached.values():
-            old.close()
-        _attached.clear()
+        if len(_attached) >= 4:                  # the scan side has two buffers; a new scan brings new ones
+            for old in _attached.values():
+                old.close()
+            _attached.clear()
         shm = _attached[name] = shared_memory.SharedMemory(name=name)
     view = shm.buf[:length]
     try:
@@ -113,25 +114,19 @@ def _worker_count() -> int:
     return min(MAX_WORKERS, cores - 1) if cores >= 3 else 0
 
 
-class _Helpers:
+class _Slot:
+    """One shared-memory buffer and the lock that says it is in use."""
+
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.pool = None
         self.shm: shared_memory.SharedMemory | None = None
-        self.workers = _worker_count()
-        self.broken = self.workers < 2
 
-    def _start(self, size: int) -> None:
-        if self.pool is None:
-            from concurrent.futures import ProcessPoolExecutor
-            # spawn everywhere: forking a process that runs the UI server's
-            # threads is unsafe, and Windows can only spawn anyway.
-            self.pool = ProcessPoolExecutor(max_workers=self.workers, mp_context=get_context("spawn"))
+    def ensure(self, size: int) -> None:
         if self.shm is None or self.shm.size < size:
-            self._drop_shm()
+            self.drop()
             self.shm = shared_memory.SharedMemory(create=True, size=size)
 
-    def _drop_shm(self) -> None:
+    def drop(self) -> None:
         if self.shm is not None:
             try:
                 self.shm.close()
@@ -140,16 +135,38 @@ class _Helpers:
                 pass
             self.shm = None
 
+
+class _Helpers:
+    # Two buffers: the carver searches the next chunk while it still checks the files found in this one.
+    SLOTS = 2
+
+    def __init__(self) -> None:
+        self.pool = None
+        self.slots = [_Slot() for _ in range(self.SLOTS)]
+        self.workers = _worker_count()
+        self.broken = self.workers < 2
+
+    def _start(self) -> None:
+        if self.pool is None:
+            from concurrent.futures import ProcessPoolExecutor
+            # spawn everywhere: forking a process that runs the UI server's
+            # threads is unsafe, and Windows can only spawn anyway.
+            self.pool = ProcessPoolExecutor(max_workers=self.workers, mp_context=get_context("spawn"))
+
     def search(self, buf) -> list[tuple[int, int]] | None:
-        if self.broken or len(buf) < PARALLEL_MIN or not self.lock.acquire(blocking=False):
-            return None                                  # a second scan at once searches on its own
+        if self.broken or len(buf) < PARALLEL_MIN:
+            return None
+        slot = next((sl for sl in self.slots if sl.lock.acquire(blocking=False)), None)
+        if slot is None:
+            return None                                  # a third search at once runs on its own
         try:
             n = len(buf)
-            self._start(max(n, 8 << 20))
-            self.shm.buf[:n] = buf
+            self._start()
+            slot.ensure(max(n, 8 << 20))
+            slot.shm.buf[:n] = buf
             step = -(-n // self.workers)
             bounds = [(a, min(a + step, n)) for a in range(0, n, step)]
-            futures = [self.pool.submit(_worker_search, self.shm.name, n, a, b) for a, b in bounds]
+            futures = [self.pool.submit(_worker_search, slot.shm.name, n, a, b) for a, b in bounds]
             parts = [f.result() for f in futures]
         except Exception as exc:
             self.broken = True
@@ -157,14 +174,15 @@ class _Helpers:
             self.close()
             return None
         finally:
-            self.lock.release()
+            slot.lock.release()
         return _merge(buf, bounds, parts)
 
     def close(self) -> None:
         if self.pool is not None:
             self.pool.shutdown(wait=False, cancel_futures=True)
             self.pool = None
-        self._drop_shm()
+        for sl in self.slots:
+            sl.drop()
 
 
 def _merge(buf, bounds, parts) -> list[tuple[int, int]]:

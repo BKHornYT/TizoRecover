@@ -12,7 +12,6 @@ assumption, not passed off as fact.
 
 from __future__ import annotations
 
-import re
 import struct
 import time
 from dataclasses import dataclass
@@ -170,14 +169,16 @@ def is_bad(value: int, bits: int = 32) -> bool:
     return 0x0FFFFFF0 <= value <= 0x0FFFFFF7
 
 
-def read_chain(src, fat: FatInfo, start: int, limit: int = 1 << 22) -> list[int]:
+def read_chain(src, fat: FatInfo, start: int, limit: int = 1 << 22,
+               table: list[int] | None = None) -> list[int]:
+    """A cluster chain; from ``table`` (the FAT already in memory) when given, else entry by entry."""
     chain: list[int] = []
     seen: set[int] = set()
     current = start
     while 2 <= current < fat.cluster_count + 2 and current not in seen and len(chain) < limit:
         chain.append(current)
         seen.add(current)
-        nxt = read_fat_entry(src, fat, current)
+        nxt = table[current] if table is not None and current < len(table) else read_fat_entry(src, fat, current)
         if nxt == 0 or is_end(nxt, fat.bits) or is_bad(nxt, fat.bits):
             break
         if nxt == current:
@@ -195,9 +196,10 @@ def deleted_chain(src, fat: FatInfo, start: int, size: int,
     clusters after its first one, skipping clusters that are in use now.
     """
     need = max(1, -(-size // fat.cluster_size))
-    linked = read_chain(src, fat, start, limit=need + 1)
+    linked = read_chain(src, fat, start, limit=need + 1, table=table)
     if len(linked) == need:
-        last = read_fat_entry(src, fat, linked[-1])
+        tail = linked[-1]
+        last = table[tail] if table is not None and tail < len(table) else read_fat_entry(src, fat, tail)
         if is_end(last, fat.bits):
             return linked, False
     chain = [start]
@@ -484,8 +486,6 @@ def _extension(name: str) -> str:
 
 # The first entry of every FAT subdirectory: "." (dot, ten spaces) with the directory bit.
 DIR_MAGIC = b".          \x10"
-# A long-name slot: sequence byte, five UTF-16 characters, attribute 0x0F, type 0, checksum, ..., cluster 0.
-_LFN_SLOT = re.compile(rb"[\x01-\x14\x41-\x54\xe5].{10}\x0f\x00.{13}\x00\x00", re.S)
 
 
 def _plausible_slot(slot: bytes) -> bool:
@@ -536,12 +536,20 @@ class LooseDirs:
         fat = self.fat
         per: dict[int, int] = {}
         base = fat.cluster_offset(2)
-        for m in _LFN_SLOT.finditer(buf, 0, length):
-            off = pos + m.start()
-            if off % 32 or off < base:
-                continue
-            c = 2 + (off - base) // fat.cluster_size
-            per[c] = per.get(c, 0) + 1
+        # Slots are 32-byte aligned and a long-name slot has 0x0F at byte 11: take every 32nd byte (one C-speed
+        # slice, 1/32 of the chunk) and only look closer where it is 0x0F. A regex over every byte cost 46 s
+        # of a 7 GB scan.
+        first = (-pos) % 32
+        attrs = bytes(buf[first + 11:length:32])
+        k = attrs.find(0x0F)
+        while k >= 0:
+            i = first + k * 32
+            if i + 32 <= len(buf) and buf[i + 12] == 0 and buf[i + 26] == 0 and buf[i + 27] == 0                     and (0x01 <= buf[i] <= 0x14 or 0x41 <= buf[i] <= 0x54 or buf[i] == 0xE5):
+                off = pos + i
+                if off >= base:
+                    c = 2 + (off - base) // fat.cluster_size
+                    per[c] = per.get(c, 0) + 1
+            k = attrs.find(0x0F, k + 1)
         for c, n in per.items():
             if n < 2 or c in self.dirs or c in self.loose_clusters or len(self.loose_clusters) >= self.MAX:
                 continue

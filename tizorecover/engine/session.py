@@ -24,7 +24,7 @@ from tizorecover.engine import verify
 from tizorecover.engine.access import CandidateData, pieces_of
 from tizorecover.engine.blockdev import (BlockReader, DeviceBlockReader, DriveGoneError, VolumeAccessError,
                                          WindowBlockReader, open_source)
-from tizorecover.engine.carver import carve_range
+from tizorecover.engine.carver import CachedSource, carve_cache, carve_range
 from tizorecover.engine.drives import Drive, list_drives
 from tizorecover.engine.formats import ByteSourceView
 from tizorecover.engine.partitions import PatchedReader
@@ -172,7 +172,8 @@ class ScanJob:
         self._fs_starts: dict[int, Item] = {}
         self._carved_starts: dict[int, Item] = {}
         self.changed: list[int] = []          # ids of items replaced in place (the UI re-fetches them)
-        self.loose = None                     # ntfs.LooseRecords the deep scan collects
+        self.loose = None                     # ntfs.LooseRecords / fat.LooseDirs the deep scan collects
+        self._verify_src = None               # a block cache while many files are checked in disk order
         self._loose_offsets: list[int] = []   # from a saved scan, read again on resume
         self.ghosts: list[dict] = []          # names a folder index still remembers (NTFS $I30 slack)
         self._ghost_by_key: dict[tuple[int, str], dict] = {}
@@ -328,7 +329,7 @@ class ScanJob:
 
     def _name_from_content(self, candidate: FileCandidate) -> None:
         """A carved file named by what it says about itself (EXIF date + camera, ID3, title...)."""
-        data = CandidateData(candidate, self.src)
+        data = CandidateData(candidate, self._verify_src or self.src)
         try:
             name, ts = naming.describe(data.at, candidate.size, candidate.ext)
         except DriveGoneError:
@@ -403,7 +404,7 @@ class ScanJob:
             status, notes = verify.GOOD, ["Not deleted: the file is still on the drive."]
         else:
             try:
-                status, notes = verify.assess(candidate, self.src, self.allocation)
+                status, notes = verify.assess(candidate, self._verify_src or self.src, self.allocation)
             except (OSError, ValueError) as exc:
                 status, notes = verify.PARTIAL, [f"could not check: {exc}"]
         if candidate.strategy is Strategy.CARVE and not candidate.original_path:
@@ -461,8 +462,16 @@ class ScanJob:
         for offset in self._loose_offsets:           # found before a save this scan resumed from
             self.loose.add(offset, self.src.at(offset, 4096))
         self._loose_offsets = []
-        for cand in self.loose.candidates(self.src, self.drive.id):
-            self._add(cand)
+        # Checked in disk order through a block cache: thousands of small reads in a row become a few big
+        # ones (on a USB stick, random small reads were 80+ s of a 10-minute scan).
+        found = list(self.loose.candidates(self.src, self.drive.id))
+        found.sort(key=lambda c: (pieces_of(c)[:1] or [(-1, 0)])[0][0])
+        self._verify_src = CachedSource(self.src, keep=64)
+        try:
+            for cand in found:
+                self._add(cand)
+        finally:
+            self._verify_src = None
 
     def _pause_until_back(self, exc: Exception) -> bool:
         """The drive went away mid-scan. Save, wait for it (or Stop), reopen it, resume in place.
@@ -692,6 +701,8 @@ class ScanJob:
         on_record = None
         on_chunk = None
         align = self._cluster_layout()
+        cache = carve_cache(self.src)       # shared: the carver's walks, then naming and checking its finds
+        self._verify_src = cache
         if self.filesystem == "ntfs":
             if self.loose is None:
                 boot = ntfs_fs.parse_boot_sector(self.src)
@@ -728,6 +739,7 @@ class ScanJob:
                 continue
             for cand in carve_range(self.src, self.drive.id, start=start, end=offset + length,
                                     progress=self._advance, should_stop=stop, on_record=on_record,
-                                    on_chunk=on_chunk, align=align):
+                                    on_chunk=on_chunk, align=align, cache=cache):
                 self._add(cand)
+        self._verify_src = None
         self._loose_records_found()
