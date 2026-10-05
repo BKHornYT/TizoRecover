@@ -332,6 +332,7 @@ def carve_range(
     overlap = SEARCH_MAGIC
     pos = start
     skip_until = start
+    claim_fmt: Format | None = None              # the type of the carved file whose bytes we are inside
     pulses = 0
     # One cache for the main pass and the format walkers: what one reads, the other never reads again.
     walk_src = cache or carve_cache(src)
@@ -423,9 +424,14 @@ def carve_range(
                     cand = attempt(fmt, offset, strict=inside)
                     if cand is None:
                         continue
+                    if inside and fmt is claim_fmt and offset + cand.size == skip_until:
+                        # Same type, same last byte: the tail of that file (an MP3 frame that happened to sit at a
+                        # cluster start), not a file of its own. A 52 MB MP3 was listed three times.
+                        continue
                     if inside:
                         cand.reasons.append("starts at a cluster inside bytes an earlier carved file claimed")
-                    skip_until = max(skip_until, offset + cand.size)
+                    if offset + cand.size > skip_until:
+                        skip_until, claim_fmt = offset + cand.size, fmt
                     if on_found is not None:
                         on_found(cand)
                     yield cand

@@ -183,6 +183,24 @@ def test_cluster_start_inside_claim():
     return fails
 
 
+def test_no_tails_of_one_file():
+    print("a file's own tail at a cluster start is not a second file")
+
+    class Mem:
+        def __init__(self, b):
+            self.b, self.size = b, len(b)
+
+        def at(self, o, n):
+            return self.b[o:o + n]
+
+    # MPEG-1 layer III, 32 kbps, 48 kHz: 96-byte frames, so every 12 KiB a frame starts on a 4 KiB cluster.
+    frame = bytes([0xFF, 0xFB, 0x14, 0x64]) + bytes(92)
+    found = [(c.data_offset, c.size) for c in carve_range(Mem(frame * 4000 + bytes(16384)), "t", align=(4096, 0))]
+    ok = found == [(0, 384000)]
+    print("   ", "ok" if ok else f"{len(found)} files: {found[:3]}")
+    return [] if ok else ["one MP3 listed as several (its tails)"]
+
+
 def main() -> int:
     failures: list[str] = []
     for test in (
@@ -192,6 +210,7 @@ def main() -> int:
         test_naming,
         test_junk_produces_no_valid_files,
         test_cluster_start_inside_claim,
+        test_no_tails_of_one_file,
     ):
         failures.extend(test())
     print()
