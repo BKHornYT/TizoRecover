@@ -533,6 +533,11 @@ class Handler(BaseHTTPRequestHandler):
             if app.job is None:
                 return self._json({"state": "none"})
             return self._json({**app.job.status(), "job": app.job_serial})
+        if path == "/api/items/changed":
+            if app.job is None:
+                return self._json({"items": [], "total": 0})
+            items, total = app.job.changed_since(int(q("since", "0")))
+            return self._json({"items": [it.to_dict() for it in items], "total": total})
         if path == "/api/items":
             if app.job is None:
                 return self._json({"items": [], "total": 0})

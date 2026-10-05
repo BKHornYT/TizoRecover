@@ -10,7 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SUITES = ["test_carver.py", "test_ntfs.py", "test_fat.py", "test_e2e.py", "test_session.py",
           "test_tzscan.py", "test_exfat.py", "test_partitions.py",
           "test_formats_more.py", "test_ext4.py", "test_robust.py", "test_fixdrive.py", "test_naming.py", "test_i30.py",
-          "test_magicsearch.py"]
+          "test_magicsearch.py", "test_qformat.py"]
 
 
 def main() -> int:

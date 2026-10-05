@@ -169,6 +169,10 @@ class ScanJob:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._fs_starts: dict[int, Item] = {}
+        self._carved_starts: dict[int, Item] = {}
+        self.changed: list[int] = []          # ids of items replaced in place (the UI re-fetches them)
+        self.loose = None                     # ntfs.LooseRecords the deep scan collects
+        self._loose_offsets: list[int] = []   # from a saved scan, read again on resume
         self.ghosts: list[dict] = []          # names a folder index still remembers (NTFS $I30 slack)
         self._ghost_by_key: dict[tuple[int, str], dict] = {}
         self.thread = threading.Thread(target=self._run, name="tizo-scan", daemon=True)
@@ -202,6 +206,12 @@ class ScanJob:
         with self._lock:
             return list(self.items)
 
+    def changed_since(self, since: int) -> tuple[list[Item], int]:
+        """Items replaced in place after the first ``since`` changes, and the change count now."""
+        with self._lock:
+            ids = self.changed[since:]
+            return [self.items[i] for i in dict.fromkeys(ids)], len(self.changed)
+
     def data(self, item: Item) -> CandidateData:
         return CandidateData(item.candidate, self.src)
 
@@ -216,7 +226,8 @@ class ScanJob:
                 "progress": self.progress.to_dict(), "problems": list(self.problems),
                 "free_bytes": self.free_bytes, "autosave": bool(self.autosave),
                 "resumed_from": self.resumed_from, "bad_bytes": self.bad_bytes(),
-                "drive_gone": self.drive_gone, "paused": self.paused, "user_paused": self.user_paused}
+                "drive_gone": self.drive_gone, "paused": self.paused, "user_paused": self.user_paused,
+                "changed": len(self.changed)}
 
     def _device(self):
         """The raw device reader under any partition window or boot patch, if there is one."""
@@ -249,7 +260,8 @@ class ScanJob:
             "state": "running" if self.state in ("running", "starting") else self.state,
             "quick_done": self.quick_done, "problems": list(self.problems),
             "free_bytes": self.free_bytes,
-            "deep": {"done": deep_done, "total": self.deep_total, "last_carve_end": self.last_carve_end},
+            "deep": {"done": deep_done, "total": self.deep_total, "last_carve_end": self.last_carve_end,
+                     "records": list(self.loose.offsets) if self.loose is not None else self._loose_offsets},
             "ghosts": self.ghosts,
             "items": items,
         }
@@ -372,6 +384,12 @@ class ScanJob:
                 if note not in owner.candidate.reasons:
                     owner.candidate.reasons.append(note)
                 return
+        if candidate.metadata.get("loose_record"):
+            first = pieces_of(candidate)[:1]
+            if first and first[0][0] >= 0 and first[0][0] in self._fs_starts:
+                return                        # the file table (or an earlier pass) already has this file
+            if self._upgrade_carved(candidate):
+                return
         existing = bool(candidate.metadata.get("live")) and not self.drive.lost
         if existing:
             self.existing_count += 1
@@ -396,9 +414,41 @@ class ScanJob:
             self.items.append(item)
         self._index(item)
         if candidate.strategy is Strategy.CARVE:
+            self._carved_starts.setdefault(candidate.data_offset, item)
             self.last_carve_end = max(self.last_carve_end, candidate.data_offset + candidate.size)
         if self.on_item is not None:
             self.on_item(item)
+
+    def _upgrade_carved(self, candidate: FileCandidate) -> bool:
+        """An old file record whose data is a file carving already found: give that item its name, folder, all pieces."""
+        pieces = pieces_of(candidate)
+        twin = self._carved_starts.get(pieces[0][0]) if pieces else None
+        if twin is None or twin.candidate.strategy is not Strategy.CARVE or twin.candidate.size > candidate.size:
+            return False
+        candidate.reasons.append(f"also found by signature carving ({twin.candidate.ext or '?'})")
+        try:
+            status, notes = verify.assess(candidate, self.src, self.allocation)
+        except (OSError, ValueError) as exc:
+            status, notes = verify.PARTIAL, [f"could not check: {exc}"]
+        with self._lock:
+            twin.candidate, twin.status, twin.notes = candidate, status, notes
+            twin.category = verify.category_of(candidate.ext)
+            self.changed.append(twin.id)
+        del self._carved_starts[pieces[0][0]]
+        self._index(twin)
+        if self.on_item is not None:
+            self.on_item(twin)
+        return True
+
+    def _loose_records_found(self) -> None:
+        """Add the files the old MFT records describe (deep scan of an NTFS volume, at its end)."""
+        if self.loose is None:
+            return
+        for offset in self._loose_offsets:           # found before a save this scan resumed from
+            self.loose.add(offset, self.src.at(offset, 4096))
+        self._loose_offsets = []
+        for cand in self.loose.candidates(self.src, self.drive.id):
+            self._add(cand)
 
     def _pause_until_back(self, exc: Exception) -> bool:
         """The drive went away mid-scan. Save, wait for it (or Stop), reopen it, resume in place.
@@ -505,6 +555,7 @@ class ScanJob:
             self._index(item)
         self.quick_done = bool(saved.get("quick_done"))
         self.last_carve_end = int((saved.get("deep") or {}).get("last_carve_end") or 0)
+        self._loose_offsets = [int(o) for o in (saved.get("deep") or {}).get("records") or []]
         self.resumed_from = saved.get("saved_at")
         used = {it.candidate.original_path for it in self.items if it.candidate.original_path}
         self._set_ghosts([g for g in saved.get("ghosts") or [] if g.get("path") not in used])
@@ -624,9 +675,21 @@ class ScanJob:
             skip = min(int((self.resume.get("deep") or {}).get("done") or 0), self.deep_total)
             self.progress.done = skip
         stop = self._stop.is_set
+        on_record = None
+        if self.filesystem == "ntfs":
+            if self.loose is None:
+                boot = ntfs_fs.parse_boot_sector(self.src)
+                self.loose = ntfs_fs.LooseRecords(boot) if boot is not None else None
+                if self.loose is not None and not self.drive.lost:
+                    self.loose.exclude_mft(self.src)
+                    size = self.loose.boot.mft_record_size
+                    for off in self.loose.slack:          # allocated, so the free-space pass never reads it
+                        self.loose.add(off, self.src.at(off, size))
+            if self.loose is not None:
+                on_record = self.loose.add
         for offset, length in ranges:
             if stop():
-                return
+                break
             if skip >= length:
                 skip -= length
                 continue
@@ -640,5 +703,6 @@ class ScanJob:
             if start >= offset + length:
                 continue
             for cand in carve_range(self.src, self.drive.id, start=start, end=offset + length,
-                                    progress=self._advance, should_stop=stop):
+                                    progress=self._advance, should_stop=stop, on_record=on_record):
                 self._add(cand)
+        self._loose_records_found()

@@ -223,6 +223,7 @@ const S = {
   mode: "deep",
   scan: null,
   items: [],
+  changedSeen: 0,
   polling: null,
   speed: [],
   tileCounts: {},
@@ -1023,6 +1024,7 @@ async function startScan(driveId, mode, opts = {}) {
 function resetForScan(driveId, driveDict, mode = S.mode) {
   S.scan = null;
   S.items = [];
+  S.changedSeen = 0;
   S.selected.clear();
   S.current = null;
   S.cat = null;
@@ -1055,6 +1057,14 @@ async function fetchItems() {
   } finally { fetching = false; }
 }
 
+// Items the scan replaced in place: a carved file that an old file record later named.
+async function fetchChanged() {
+  const r = await api(`/api/items/changed?since=${S.changedSeen}`);
+  for (const it of r.items) if (it.id < S.items.length) S.items[it.id] = it;
+  S.changedSeen = r.total;
+  if (r.items.length) { S.reviewDirty = true; GAL.seen = -1; }
+}
+
 let lastReviewRefresh = 0;
 async function poll() {
   clearTimeout(S.polling);
@@ -1064,6 +1074,7 @@ async function poll() {
   S.scan = s;
   const before = S.items.length;
   if (s.found > before) await fetchItems();
+  if ((s.changed || 0) > S.changedSeen) await fetchChanged();
   trackSpeed(s.progress);
   if (S.items.length !== before) S.reviewDirty = true;
   const live = running();

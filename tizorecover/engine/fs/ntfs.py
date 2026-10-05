@@ -9,6 +9,7 @@ usually be recovered too.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from dataclasses import dataclass, field
 from typing import Callable, Iterator
@@ -335,22 +336,30 @@ class MftMap:
             return None
         records_per_cluster = max(1, boot.cluster_size // boot.mft_record_size)
         capacity = sum(c for _v, _l, c in data.runs) * records_per_cluster
-        header = src.at(mft_lcn * boot.cluster_size, boot.mft_record_size)
-        count = 0
-        if len(header) >= 0x48 and header[:4] == MFT_RECORD:
-            # Record 0's own header carries the $MFT's allocated/real/initialized
-            # sizes at 0x30/0x38/0x40. The initialized size is the record count;
-            # 0x38 is the byte length, which is not it. Anything outside the
-            # extents' own capacity is not a record count, so ignore it.
-            claimed = struct.unpack_from("<Q", header, 0x40)[0]
-            if 0 < claimed <= capacity:
-                count = claimed
-        return cls(boot, data.runs, count or capacity)
+        # The $DATA attribute's real size is how much of the $MFT is records;
+        # its clusters can hold more (allocated ahead), and after a quick
+        # format that slack still holds the *old* table's records, which are
+        # not today's files.
+        count = data.real_size // boot.mft_record_size
+        return cls(boot, data.runs, count if 0 < count <= capacity else capacity)
+
+    def slack_offsets(self) -> list[int]:
+        """Where the records past the $MFT's real end sit (allocated, unused: old records live there)."""
+        out = []
+        capacity = sum(c for _v, _l, c in self.runs) * self.records_per_cluster
+        for index in range(self.record_count, capacity):
+            off = self._place(index)
+            if off is not None:
+                out.append(off)
+        return out
 
     def offset_of(self, index: int) -> int | None:
         """Byte offset of record ``index``, or None when it is past the end."""
         if index < 0 or index >= self.record_count:
             return None
+        return self._place(index)
+
+    def _place(self, index: int) -> int | None:
         cluster_in_file = index // self.records_per_cluster
         for vcn, lcn, count in self.runs:
             if vcn <= cluster_in_file < vcn + count:
@@ -659,57 +668,67 @@ def recover_ntfs(
         path = _fold([parent_path, name])
         if needle is not None and needle not in path.lower():
             continue
-        metadata = {
-            "mft_index": index,
-            "parent_index": parent_index,
-            "resident": data.resident,
-            "compressed": data.compressed,
-            "sparse": data.sparse,
-            "cluster_size": boot.cluster_size,
-            "modified": _modified_time(entry),
-            "folder_deleted": folder_deleted,
-            "live": entry.in_use,
-        }
-        if data.resident:
-            payload = data.value
-            if not payload:
-                continue
-            size = len(payload)
+        cand = _file_candidate(src, boot, volume, index, entry, parent_index, name, data, path,
+                               folder_deleted, read_data)
+        if cand is not None:
+            yield cand
+
+
+def _file_candidate(src, boot: BootSector, volume: str, index: int, entry: MftEntry, parent_index: int,
+                    name: str, data: Attribute, path: str, folder_deleted: bool,
+                    read_data: bool = False) -> FileCandidate | None:
+    """One file described by an MFT record, as a candidate (None when it holds no data)."""
+    metadata = {
+        "mft_index": index,
+        "parent_index": parent_index,
+        "resident": data.resident,
+        "compressed": data.compressed,
+        "sparse": data.sparse,
+        "cluster_size": boot.cluster_size,
+        "modified": _modified_time(entry),
+        "folder_deleted": folder_deleted,
+        "live": entry.in_use,
+    }
+    if data.resident:
+        payload = data.value
+        if not payload:
+            return None
+        size = len(payload)
+        metadata["inline_data"] = payload
+    else:
+        size = data.real_size
+        if size <= 0:
+            return None
+        metadata["runlist"] = [(v, l, c) for v, l, c in data.runs]
+        metadata["extents"] = runs_to_extents(data.runs, boot.cluster_size, size)
+        if read_data:
+            payload, _gaps = read_attribute_runs(src, boot, data.runs, size)
             metadata["inline_data"] = payload
-        else:
-            size = data.real_size
-            if size <= 0:
-                continue
-            metadata["runlist"] = [(v, l, c) for v, l, c in data.runs]
-            metadata["extents"] = runs_to_extents(data.runs, boot.cluster_size, size)
-            if read_data:
-                payload, _gaps = read_attribute_runs(src, boot, data.runs, size)
-                metadata["inline_data"] = payload
-        cand = FileCandidate(
-            ext=_extension(name),
-            size=size,
-            data_offset=-1,
-            strategy=Strategy.NTFS,
-            name=name,
-            original_path=path,
-            verdict=Verdict.PARTIAL if data.compressed else Verdict.VALID,
-            confidence=0.9 if data.resident else 0.85,
-            reasons=[
-                f"MFT record {index} in use when this volume was lost" if entry.in_use
-                else f"MFT record {index} not in use (sequence {entry.sequence})",
-                "resident data in the record itself" if data.resident
-                else f"{len(data.runs)} data run(s) in the record",
-            ],
-            volume=volume,
-            metadata=metadata,
-        )
-        if data.compressed:
-            cand.reasons.append("NTFS-compressed: the raw clusters are not the file's bytes")
-        if not data.resident and len(data.runs) > 1:
-            cand.gaps = _inter_run_gaps(data.runs, boot.cluster_size, size)
-            cand.fragment_count = len(data.runs)
-            cand.reasons.append(f"split across {len(data.runs)} extents")
-        yield cand
+    cand = FileCandidate(
+        ext=_extension(name),
+        size=size,
+        data_offset=-1,
+        strategy=Strategy.NTFS,
+        name=name,
+        original_path=path,
+        verdict=Verdict.PARTIAL if data.compressed else Verdict.VALID,
+        confidence=0.9 if data.resident else 0.85,
+        reasons=[
+            f"MFT record {index} in use when this volume was lost" if entry.in_use
+            else f"MFT record {index} not in use (sequence {entry.sequence})",
+            "resident data in the record itself" if data.resident
+            else f"{len(data.runs)} data run(s) in the record",
+        ],
+        volume=volume,
+        metadata=metadata,
+    )
+    if data.compressed:
+        cand.reasons.append("NTFS-compressed: the raw clusters are not the file's bytes")
+    if not data.resident and len(data.runs) > 1:
+        cand.gaps = _inter_run_gaps(data.runs, boot.cluster_size, size)
+        cand.fragment_count = len(data.runs)
+        cand.reasons.append(f"split across {len(data.runs)} extents")
+    return cand
 
 
 def _i30_entry(buf: bytes, pos: int, dir_index: int) -> dict | None:
@@ -833,3 +852,122 @@ def _extension(name: str) -> str:
     if "." in name[1:]:
         return name.rsplit(".", 1)[1].lower()[:16]
     return ""
+
+
+# The first bytes of an MFT record: "FILE", then the update-sequence offset
+# (0x30 on NTFS 3.1 = XP and later, 0x2A on NTFS 3.0).
+RECORD_MAGICS = (b"FILE0\x00", b"FILE*\x00")
+
+
+class LooseRecords:
+    """Old MFT records the deep scan finds lying in free space.
+
+    A quick format writes a new, small $MFT and marks everything else free,
+    but the old records stay where they were until something overwrites
+    them; so does a $MFT whose own run list is gone. Each one still holds a
+    file's name, parent folder, size, dates and *all* its data runs, so a
+    fragmented file comes back whole and in its folder, where carving would
+    give a nameless, often cut-off copy.
+    """
+
+    MAX = 2_000_000                      # records kept; the rest are counted, not held
+
+    def __init__(self, boot: BootSector) -> None:
+        self.boot = boot
+        self.offsets: list[int] = []
+        self._seen: set[bytes] = set()
+        self._entries: list[tuple[int, MftEntry]] = []
+        self.skipped = 0
+        self.exclude: list[tuple[int, int]] = []    # today's $MFT: the quick scan has read those
+        self.slack: list[int] = []                   # its allocated-but-unused tail: old records, never deep-read
+
+    def exclude_mft(self, src) -> None:
+        """Skip records inside the volume's current $MFT (its own records are not old ones)."""
+        mft_lcn = find_mft_start(src, self.boot)
+        mft_map = MftMap.locate(src, self.boot, mft_lcn) if mft_lcn is not None else None
+        if mft_map is not None:
+            size = self.boot.mft_record_size
+            self.exclude = [(o, o + size) for o in (mft_map.offset_of(i) for i in range(mft_map.record_count))
+                            if o is not None]
+            self.exclude = _merge_ranges(self.exclude)
+            self.slack = mft_map.slack_offsets()
+
+    def add(self, offset: int, raw: bytes) -> bool:
+        """Take the record at volume ``offset`` (``raw`` = its bytes, at least one record long)."""
+        size = self.boot.mft_record_size
+        if offset % self.boot.bytes_per_sector or len(raw) < size:
+            return False
+        if any(a <= offset < b for a, b in self.exclude):
+            return False
+        raw = bytes(raw[:size])
+        usa_ofs = struct.unpack_from("<H", raw, 4)[0]
+        index = struct.unpack_from("<I", raw, 0x2C)[0] if usa_ofs >= 0x30 else -1
+        entry = parse_mft_record(raw, self.boot, index)
+        if entry is None or not entry.names():
+            return False
+        # The same record is often on disk more than once (an old $MFTMirr,
+        # $LogFile pages, an MFT moved by defrag): keep one copy of each.
+        key = hashlib.blake2b(raw[0x2C:0x30] + raw[0x38:], digest_size=16).digest()
+        if key in self._seen:
+            return False
+        if len(self._entries) >= self.MAX:
+            self.skipped += 1
+            return False
+        self._seen.add(key)
+        self.offsets.append(offset)
+        self._entries.append((offset, entry))
+        return True
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def candidates(self, src, volume: str,
+                   should_stop: Callable[[], bool] | None = None) -> Iterator[FileCandidate]:
+        """Every file the collected records describe, with paths built from the collected folders."""
+        dirs: dict[int, tuple[int, str, bool]] = {}
+        files: list[tuple[int, MftEntry, int, str, Attribute]] = []
+        for _offset, entry in self._entries:
+            if entry.base_index not in (0, entry.index):
+                continue                   # an extension record: its base record has the file
+            if 0 <= entry.index < 24:
+                continue                   # the old volume's own system files ($MFT, $Bitmap, ...)
+            names = entry.names()
+            parent_index, name, _ns, _real = min(names, key=lambda n: n[2] == 2)
+            if entry.is_dir:
+                if entry.index < 0:
+                    continue               # NTFS 3.0 records carry no number: nothing can point at it
+                old = dirs.get(entry.index)
+                if old is None or (entry.in_use and not old[2]):
+                    dirs[entry.index] = (parent_index, name, entry.in_use)
+                continue
+            data = entry.first(ATTR_DATA)
+            if data is not None:
+                files.append((entry.index, entry, parent_index, name, data))
+        limit = src.size
+        for index, entry, parent_index, name, data in files:
+            if should_stop is not None and should_stop():
+                return
+            parent_path, folder_deleted = _resolve_path(parent_index, dirs)
+            cand = _file_candidate(src, self.boot, volume, index, entry, parent_index, name, data,
+                                   _fold([parent_path, name]), folder_deleted)
+            if cand is None:
+                continue
+            extents = cand.metadata.get("extents") or []
+            if any(off != SPARSE and (off < 0 or off + n > limit) for off, n in extents):
+                continue                   # points outside this volume: from a bigger, older one
+            cand.metadata["live"] = False                  # it is gone from today's file table
+            cand.metadata["loose_record"] = True
+            cand.confidence = min(cand.confidence, 0.8)
+            cand.reasons[0] = (f"old MFT record {index} found in free space by the deep scan "
+                               f"({'in use' if entry.in_use else 'deleted'} when that table was replaced)")
+            yield cand
+
+
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for a, b in sorted(ranges):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out

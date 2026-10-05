@@ -20,10 +20,11 @@ from typing import Callable, Iterable, Iterator
 
 from tizorecover.engine.blockdev import DEFAULT_CHUNK, DriveGoneError
 from tizorecover.engine.formats import BY_MAGIC, FORMATS, MAX_MAGIC, Format, Extent
-from tizorecover.engine.magicsearch import find_magics
+from tizorecover.engine.magicsearch import ALL_MAGICS, EXTRA_MAGICS, MAX_MAGIC as SEARCH_MAGIC, find_magics
 from tizorecover.engine.results import FileCandidate, Strategy, Verdict
 
 MIN_SIZE = 8
+RECORD_READ = 4096                 # bytes handed to on_record: the largest MFT record size
 HEARTBEAT = 16
 
 
@@ -96,10 +97,12 @@ def _blank(buf: bytes) -> bool:
 
 # The regex returns the longest magic at a position; a shorter magic that is
 # its prefix must still get its turn.
-_MAGIC_FORMATS = {m: [f for w in BY_MAGIC if m.startswith(w) for f in BY_MAGIC[w]] for m in BY_MAGIC}
+_MAGIC_FORMATS = {m: [f for w in BY_MAGIC if m.startswith(w) for f in BY_MAGIC[w]] for m in ALL_MAGICS}
+_RECORD_MAGICS = frozenset(EXTRA_MAGICS)
 
 
-def _header_hits(buf: bytes, buf_off: int, formats: set[Format]) -> Iterator[tuple[int, int, Format]]:
+def _header_hits(buf: bytes, buf_off: int, formats: set[Format],
+                 records: bool = False) -> Iterator[tuple[int, int, Format | None]]:
     """Every (magic index, file offset, format) whose magic is in ``buf``, in disk order.
 
     One regex pass finds all magics at C speed (on several cores, see
@@ -108,7 +111,10 @@ def _header_hits(buf: bytes, buf_off: int, formats: set[Format]) -> Iterator[tup
     ``MZ`` or an MPEG frame sync inside some video) never cost a disk read.
     """
     for idx, stop in find_magics(buf):
-        for fmt in _MAGIC_FORMATS[bytes(buf[idx:stop])]:
+        magic = bytes(buf[idx:stop])
+        if records and magic in _RECORD_MAGICS:
+            yield idx, buf_off + idx, None         # a file-system record, not a file
+        for fmt in _MAGIC_FORMATS[magic]:
             if fmt not in formats:
                 continue
             i = idx - fmt.back
@@ -194,17 +200,22 @@ def carve_range(
     progress: Callable[[int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     on_found: Callable[[FileCandidate], None] | None = None,
+    on_record: Callable[[int, bytes], None] | None = None,
 ) -> Iterator[FileCandidate]:
     """Forward-carve every recognisable file in ``[start, end)``.
 
     Hits are handled in disk order and a found file's bytes are skipped (not
     even read), the way PhotoRec does it: a photo embedded in a video is part
     of the video, not a file of its own, and a long video costs no searching.
+
+    ``on_record(offset, bytes)`` hears about every NTFS file record
+    (``FILE``) in the space searched, with at least 4 KiB from its start;
+    those are reported even inside a carved file's bytes that were read.
     """
     wanted = tuple(formats) if formats is not None else FORMATS
     wanted_set = set(wanted)
     end = src.size if end is None else min(end, src.size)
-    overlap = MAX_MAGIC
+    overlap = SEARCH_MAGIC
     pos = start
     skip_until = start
     pulses = 0
@@ -230,9 +241,15 @@ def carve_range(
             # Empty space (zeros, or 0xFF on erased flash) holds no headers; one
             # comparison skips it at memory speed instead of a search.
             if not _blank(buf):
-                for idx, offset, fmt in _header_hits(buf, pos, wanted_set):
+                for idx, offset, fmt in _header_hits(buf, pos, wanted_set, on_record is not None):
                     if idx >= chunk and pos + chunk < end:
                         continue                         # seen again, whole, in the next chunk
+                    if fmt is None:
+                        raw = buf[idx:idx + RECORD_READ]
+                        if len(raw) < RECORD_READ:
+                            raw = walk_src.at(offset, RECORD_READ)
+                        on_record(offset, raw)
+                        continue
                     pulses += 1
                     if pulses % HEARTBEAT == 0:
                         if progress is not None:
@@ -287,6 +304,7 @@ def carve_orphans(
     progress: Callable[[int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     on_found: Callable[[FileCandidate], None] | None = None,
+    on_record: Callable[[int, bytes], None] | None = None,
 ) -> Iterator[FileCandidate]:
     """Recover files whose header is gone but whose tail survived.
 
