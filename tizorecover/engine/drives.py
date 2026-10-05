@@ -197,6 +197,28 @@ def _linux_drives() -> list[Drive]:
     return drives
 
 
+def whole_disk(part: Drive) -> Drive | None:
+    """The whole physical disk a volume sits on, as one scannable drive (Disk Drill's "Run all recovery
+    methods" on a disk): every byte, the partitions and the space between and around them."""
+    if part.kind == "image" or part.lost:
+        return None
+    if sys.platform == "win32":
+        path, size = f"\\\\.\\PhysicalDrive{part.disk}", part.disk_size
+        did = f"disk:{part.disk}"
+    else:
+        path = f"/dev/{part.disk_name}"
+        try:
+            size = int(open(f"/sys/class/block/{part.disk_name}/size").read()) * 512
+        except (OSError, ValueError):
+            return None
+        did = f"disk:{part.disk_name}"
+    if not size:
+        return None
+    return Drive(id=did, kind="disk", path=path, offset=0, size=size, label="", letter="", filesystem="unknown",
+                 free=0, disk=part.disk, disk_name=part.disk_name, bus=part.bus, media=part.media,
+                 removable=part.removable, system=part.system, disk_size=size, disk_info=dict(part.disk_info))
+
+
 def list_drives() -> list[Drive]:
     """Every scannable drive, removable ones first."""
     if sys.platform == "win32":

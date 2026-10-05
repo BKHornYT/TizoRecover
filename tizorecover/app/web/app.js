@@ -822,9 +822,6 @@ $$("#happened .hap").forEach((b) => {
     if (key === "missing") { go("fix"); return; }
     const h = HAPPENED[key];
     $$("#happened .hap").forEach((x) => x.classList.toggle("on", x === b));
-    S.mode = h.mode;
-    try { localStorage.setItem("tizo-mode", S.mode); } catch {}
-    renderMethod();
     $("#hap-hint").innerHTML = `${icon("info")}<span>${h.text}</span>`;
     $("#hap-hint").hidden = false;
   };
@@ -884,8 +881,8 @@ function renderDevices() {
     const solo = g.image && g.parts.length === 1;
     const collapsed = S.collapsed.has(g.key);
     const conn = g.image ? "File" : (g.bus || "").toUpperCase() || "—";
-    const head = `<div class="dev-row disk ${collapsed ? "closed" : ""}" data-disk="${esc(g.key)}">
-      <div class="dev-name"><span class="twisty">${icon("chevron")}</span><span class="dimg ${g.kind}">${icon(g.kind)}</span><b title="${esc(g.name)}">${esc(g.name)}</b></div>
+    const head = `<div class="dev-row disk ${collapsed ? "closed" : ""} ${S.picked === diskId(g) ? "sel" : ""}" data-disk="${esc(g.key)}" tabindex="0">
+      <div class="dev-name"><span class="twisty" data-fold="${esc(g.key)}">${icon("chevron")}</span><span class="dimg ${g.kind}">${icon(g.kind)}</span><b title="${esc(g.name)}">${esc(g.name)}</b></div>
       <div class="cell-muted">${g.image ? "Disk image" : "Hardware disk"}</div>
       <div class="cell-muted">${esc(conn)}</div>
       <div class="num">${size(g.size)}</div>
@@ -917,12 +914,25 @@ function renderDevices() {
     b.onclick = (e) => { e.stopPropagation(); api("/api/partitions/stop", {}).catch(() => {}); };
   });
   $$(".dev-row.disk", box).forEach((el) => {
-    el.onclick = () => { const k = el.dataset.disk; S.collapsed.has(k) ? S.collapsed.delete(k) : S.collapsed.add(k); renderDevices(); };
+    el.onclick = (e) => {
+      const k = el.dataset.disk;
+      if (e.target.closest("[data-fold]")) { S.collapsed.has(k) ? S.collapsed.delete(k) : S.collapsed.add(k); renderDevices(); return; }
+      const g = disks().find((x) => x.key === k);
+      if (!g || g.image) return;
+      S.picked = diskId(g);
+      renderDevices();
+    };
   });
+  box.oncontextmenu = (e) => {
+    const row = e.target.closest(".dev-row");
+    if (!row) return;
+    e.preventDefault();
+    deviceMenu(row, e.clientX, e.clientY);
+  };
   $$(".dev-row.part", box).forEach((el) => {
     el.onclick = () => { S.picked = el.dataset.id; $$(".dev-row.part", box).forEach((x) => x.classList.toggle("sel", x === el)); renderPicked(); };
-    el.ondblclick = () => startScan(el.dataset.id, S.mode);
-    el.onkeydown = (e) => { if (e.key === "Enter") startScan(el.dataset.id, S.mode); };
+    el.ondblclick = () => startScan(el.dataset.id, "deep");
+    el.onkeydown = (e) => { if (e.key === "Enter") startScan(el.dataset.id, "deep"); };
   });
   renderPicked();
 }
@@ -967,65 +977,123 @@ async function pollParts() {
   }
 }
 
+const diskId = (g) => `disk:${g.disk}`;
+// A disk picked in the list: shown like a drive, with its volumes as children.
+function pickedDrive() {
+  if (S.picked && S.picked.startsWith("disk:")) {
+    const g = disks().find((x) => !x.image && diskId(x) === S.picked);
+    if (!g) return null;
+    const p = g.parts[0] || {};
+    return { id: S.picked, kind: "disk", whole: true, size: g.size, removable: g.removable, disk: g.disk, disk_name: g.name,
+      bus: g.bus, media: g.media, letter: "", label: g.name, filesystem: "unknown", free: 0, disk_info: p.disk_info || {}, parts: g.parts };
+  }
+  return S.drives.find((x) => x.id === S.picked) || null;
+}
+const driveType = (d) => (d.whole ? "Hardware disk" : d.lost ? "Lost partition" : d.kind === "image" ? "Disk image"
+  : d.kind === "disk" ? "Whole disk" : d.kind === "partition" ? "Partition" : "Logical volume");
+const shortDay = new Intl.DateTimeFormat(undefined, { year: "2-digit", month: "numeric", day: "numeric" });
+
 function renderPicked() {
-  const d = S.drives.find((x) => x.id === S.picked);
+  const d = pickedDrive();
   $("#dp-empty").hidden = !!d;
   $("#dp-drive").hidden = !d;
   $("#search-btn").disabled = !d;
   if (!d) return;
   $("#dp-ico").className = `dp-ico ${d.removable ? "usb" : ""}`;
-  $("#dp-ico").innerHTML = icon(d.lost ? "radar" : driveKind(d));
-  $("#dp-name").textContent = driveTitle(d).trim();
-  const type = d.lost ? "Lost partition" : d.kind === "image" ? "Disk image" : d.kind === "disk" ? "Whole disk" : d.kind === "partition" ? "Partition" : "Logical volume";
-  $("#dp-sub").textContent = `${type} · ${size(d.size)}`;
+  $("#dp-ico").innerHTML = icon(d.lost ? "radar" : d.whole ? (d.removable ? "usb" : d.media === "HDD" ? "hdd" : "ssd") : driveKind(d));
+  $("#dp-name").textContent = d.whole ? d.disk_name : driveTitle(d).trim();
+  const type = driveType(d);
+  $("#dp-sub").textContent = `${type} • ${size(d.size)}`;
   const sv = savedFor(d.id);
   const rb = $("#resume-btn");
   rb.hidden = !sv;
   if (sv) {
-    rb.innerHTML = `<span class="grow"><b>${sv.state === "done" ? "Open last results" : "Resume scan"}</b><small>${esc(savedText(sv))}</small></span>${icon("chevron")}`;
+    rb.innerHTML = `<span class="grow"><b>${esc(shortDay.format(new Date((sv.saved_at || 0) * 1000)))} – ${esc(driveTitle(d).trim())}</b>
+      <small>${sv.state === "done" ? "Load last scan" : `Resume scan (${Math.floor(sv.deep_pct || 0)}%)`} (${esc(ago(sv.saved_at))})</small></span>${icon("chevron")}`;
   }
   let note = "";
-  if (d.lost) note = `Lost ${esc(fsName(d.filesystem))} file system, found by its ${esc(d.found_by)}. Scanning it reads the drive as it was before.`;
+  if (d.whole) note = "Searches every byte of the disk: all its partitions and the space around them. Slower than one volume, but it finds the most.";
+  else if (d.lost) note = `Lost ${esc(fsName(d.filesystem))} file system, found by its ${esc(d.found_by)}. Scanning it reads the drive as it was before.`;
   else if (d.kind === "disk") note = "No partitions on this disk. Don't let Windows initialize or format it: search it here, or find lost partitions first.";
   else if (!d.removable && d.media === "SSD" && d.kind !== "image") note = "SSD: Windows tells SSDs to wipe deleted data (TRIM), often within seconds. Recently deleted files may already be gone.";
   else if (d.system) note = "This is your Windows drive. Windows keeps writing to it, so recover as soon as possible and save to another drive.";
   $("#dp-note").hidden = !note;
   $("#dp-note").innerHTML = note ? `${icon("alert")}<span>${note}</span>` : "";
-  const props = [
-    ["Type", type], ["File system", fsName(d.filesystem)], ["Capacity", size(d.size)],
-    ["Free", d.free ? size(d.free) : "—"], ["Connection", d.kind === "image" ? "File" : d.bus || "—"],
-    ["Disk", d.disk_name || "—"], ["Media", d.media && d.media !== "Unspecified" ? d.media : "—"],
-    ["Path", d.kind === "image" ? d.path : d.letter ? `${d.letter}:` : d.path],
-  ];
-  $("#dp-props").innerHTML = `<h4>General</h4>${props.map(([k, v]) => `<div><span>${k}</span><b title="${esc(v)}">${esc(v)}</b></div>`).join("")}`;
-  const target = d.kind === "image" ? d.id : String(d.disk);
+
+  const info = d.disk_info || {};
+  const rows = (list) => list.filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => `<div><span>${k}:</span><b title="${esc(v)}">${esc(v)}</b></div>`).join("");
+  const sec = (key, title, body, open) => `<details class="dp-sec" data-sec="${key}" ${(S.dpOpen || new Set(["general"])).has(key) || open ? "open" : ""}>
+    <summary>${icon("chevron")}${esc(title)}</summary><div class="dp-rows">${body}</div></details>`;
+  const general = d.kind === "image"
+    ? rows([["Type", type], ["Capacity", size(d.size)], ["File system", fsName(d.filesystem)], ["Path", d.path]])
+    : rows([["Type", type], ["Device model", info.model], ["Serial", info.serial], ["Vendor", info.vendor],
+      ["Protocol", d.bus], ["Revision", info.firmware], ["Capacity", size(d.size)],
+      ["Available", d.whole ? "" : d.free ? size(d.free) : "—"], ["Physical number", d.disk >= 0 ? d.disk : ""],
+      ["Partitions", info.partitions]]);
+  let html = sec("general", "General", general);
+  if (d.whole) {
+    for (const p of d.parts) {
+      html += sec(`child-${p.id}`, `Child '${driveTitle(p).trim()}'`, rows([["Type", driveType(p)], ["File system", fsName(p.filesystem)],
+        ["Capacity", size(p.size)], ["Available", p.free ? size(p.free) : "—"]]));
+    }
+  } else if (d.kind !== "image" && !d.lost && d.disk_name) {
+    html += sec("parent", `Parent '${d.disk_name}'`, rows([["Type", "Hardware disk"], ["Capacity", size(d.disk_size || 0)],
+      ["Partition style", info.style], ["Partitions", info.partitions]]));
+  }
+  if (!d.whole) {
+    html += sec("more", "More info", rows([["Filesystem", fsName(d.filesystem)], ["Offset", d.kind === "image" ? "0" : nf(d.disk_offset || d.offset || 0)],
+      ["Volume path", d.letter ? `${d.letter}:\\` : d.path], ["Capacity", size(d.size)], ["Available", d.free ? size(d.free) : "—"]]));
+  }
+  $("#dp-props").innerHTML = html;
+  $$("#dp-props details").forEach((el) => {
+    el.ontoggle = () => { S.dpOpen ||= new Set(["general"]); el.open ? S.dpOpen.add(el.dataset.sec) : S.dpOpen.delete(el.dataset.sec); };
+  });
+  const target = d.whole ? String(d.disk) : d.kind === "image" ? d.id : String(d.disk);
   $("#dp-actions").innerHTML = d.lost ? "" : searchCell(target) + (d.removable && d.kind !== "image"
     ? `<button class="btn ghost sm" data-eject="${d.disk}">${icon("eject")}Eject</button>` : "");
   $$("#dp-actions [data-pfind]").forEach((b) => { b.onclick = () => findParts(b.dataset.pfind, b.dataset.thorough === "1"); });
   $$("#dp-actions [data-pstop]").forEach((b) => { b.onclick = () => api("/api/partitions/stop", {}).catch(() => {}); });
   $$("#dp-actions [data-eject]").forEach((b) => { b.onclick = () => ejectDisk(Number(b.dataset.eject)); });
 }
+
+// Disk Drill's right-click menus on a disk and on a volume (the ones we can do).
+function deviceMenu(row, x, y) {
+  if (row.classList.contains("disk")) {
+    const g = disks().find((k) => k.key === row.dataset.disk);
+    if (!g || g.image) return;
+    S.picked = diskId(g);
+    renderDevices();
+    openCtx(x, y, [
+      { header: g.name },
+      { id: "all", label: "Run all recovery methods", run: () => startScan(diskId(g), "deep") },
+      { id: "parts", label: "Search for lost partitions", run: () => findParts(g.target, false) }, "-",
+      { id: "eject", label: "Eject disk", disabled: !g.removable, run: () => ejectDisk(g.disk) },
+    ]);
+    return;
+  }
+  const d = S.drives.find((k) => k.id === row.dataset.id);
+  if (!d) return;
+  S.picked = d.id;
+  renderDevices();
+  const sv = savedFor(d.id);
+  openCtx(x, y, [
+    { header: driveTitle(d).trim() },
+    { id: "all", label: "Run all recovery methods", run: () => startScan(d.id, "deep") },
+    { id: "quick", label: "Quick Scan", run: () => startScan(d.id, "quick") },
+    ...(d.kind !== "image" && !d.lost ? [{ id: "parts", label: "Search for lost partitions", run: () => findParts(String(d.disk), false) }] : []), "-",
+    { id: "last", label: sv ? `Load last scan (${ago(sv.saved_at)})` : "Load last scan", disabled: !sv, run: () => startScan(d.id, "deep", { resume: true }) }, "-",
+    { id: "eject", label: "Eject disk", disabled: !(d.removable && d.kind !== "image"), run: () => ejectDisk(d.disk) },
+  ]);
+}
 $("#show-hidden").onchange = (e) => { S.showHidden = e.target.checked; renderDevices(); };
 
-function renderMethod() {
-  $("#method-label").textContent = S.mode === "quick" ? "Quick scan" : "All recovery methods";
-  $$("#method-menu button").forEach((b) => b.classList.toggle("sel", b.dataset.mode === S.mode));
-}
-$("#method-btn").onclick = (e) => { e.stopPropagation(); $("#method-menu").hidden = !$("#method-menu").hidden; };
-$$("#method-menu button").forEach((b) => {
-  b.onclick = () => {
-    S.mode = b.dataset.mode;
-    try { localStorage.setItem("tizo-mode", S.mode); } catch {}
-    renderMethod();
-    $("#method-menu").hidden = true;
-  };
-});
 document.addEventListener("click", (e) => {
-  if (!e.target.closest("#method")) $("#method-menu").hidden = true;
   if (!e.target.closest(".pop-wrap")) $$(".chips .popover").forEach((p) => { p.hidden = true; });
 });
-$("#search-btn").onclick = () => S.picked && startScan(S.picked, S.mode);
-$("#resume-btn").onclick = () => S.picked && startScan(S.picked, S.mode, { resume: true });
+// Like Disk Drill: the big button runs every method; a quick scan is in the right-click menu.
+$("#search-btn").onclick = () => S.picked && startScan(S.picked, "deep");
+$("#resume-btn").onclick = () => S.picked && startScan(S.picked, "deep", { resume: true });
 async function pickSavedScan() {
   try {
     const { path } = await api("/api/pick", { kind: "tzscan" });
@@ -2127,13 +2195,13 @@ $("#f-reset").onclick = resetFilters;
 const ctx = $("#ctx");
 function closeCtx() { ctx.hidden = true; }
 function openCtx(x, y, items) {
-  ctx.innerHTML = items.map((m) => (m === "-" ? "<hr>"
+  ctx.innerHTML = items.map((m) => (m === "-" ? "<hr>" : m.header ? `<div class="ctx-h">${esc(m.header)}</div><hr>`
     : `<button data-ctx="${m.id}" ${m.disabled ? "disabled" : ""}>${m.icon ? icon(m.icon) : '<span class="ci"></span>'}<span>${esc(m.label)}</span></button>`)).join("");
   ctx.hidden = false;
   const r = ctx.getBoundingClientRect();
   ctx.style.left = `${Math.max(4, Math.min(x, innerWidth - r.width - 8))}px`;
   ctx.style.top = `${Math.max(4, Math.min(y, innerHeight - r.height - 8))}px`;
-  const acts = Object.fromEntries(items.filter((m) => m !== "-").map((m) => [m.id, m.run]));
+  const acts = Object.fromEntries(items.filter((m) => m !== "-" && !m.header).map((m) => [m.id, m.run]));
   ctx.onclick = (e) => {
     const b = e.target.closest("[data-ctx]");
     if (!b || b.disabled) return;
@@ -2644,5 +2712,4 @@ $("#ed-cancel").onclick = async () => {
 };
 ed.addEventListener("cancel", (e) => { if ($("#ed-cancel").textContent === "Stop") e.preventDefault(); });
 
-renderMethod();
 init();

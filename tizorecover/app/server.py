@@ -116,7 +116,14 @@ class App:
             return self.drives + self.images + self.lost
 
     def find_drive(self, drive_id: str) -> drives_mod.Drive | None:
-        return next((d for d in self.all_drives() if d.id == drive_id), None)
+        found = next((d for d in self.all_drives() if d.id == drive_id), None)
+        if found is None and drive_id.startswith("disk:"):
+            # A whole disk, built from any of its volumes (only offered from a disk's right-click menu).
+            key = drive_id[5:]
+            for d in self.all_drives():
+                if not d.lost and d.kind != "image" and key in (str(d.disk), d.disk_name):
+                    return drives_mod.whole_disk(d)
+        return found
 
     def start_scan(self, drive: drives_mod.Drive, mode: str, resume: dict | None = None) -> None:
         if self.job is not None:

@@ -963,3 +963,18 @@ body { font-size: 14px; }
 #dt-custom input { height: 30px; border-radius: 6px; border: 1px solid var(--line2); background: var(--surface2); color: var(--text); padding: 0 6px; }
 .fchip .x { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 2px; }
 .fchip .x svg { width: 13px; height: 13px; }
+/* drive panel: Disk Drill's collapsible General / Parent / Child / More info */
+.dp-sec { border-top: 1px solid var(--line); padding: 8px 0 4px; }
+.dp-sec summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 650; font-size: 13.5px; padding: 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dp-sec summary::-webkit-details-marker { display: none; }
+.dp-sec summary svg { width: 13px; height: 13px; transition: transform .12s; flex: none; }
+.dp-sec[open] summary svg { transform: rotate(90deg); }
+.dp-props .dp-rows { display: block; padding: 4px 0 6px; }
+.dp-props .dp-sec { display: block; padding: 8px 0 4px; }
+.dp-props .dp-rows div { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 3px 0; }
+.dp-rows span { color: var(--muted); white-space: nowrap; }
+.dp-rows b { font-weight: 500; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.dp-props { border-top: 0; padding-top: 0; gap: 0; }
+.dev-row.disk { cursor: pointer; }
+.dev-row.disk.sel { background: var(--accent-soft); }
+.ctx-h { padding: 6px 12px 4px; color: var(--faint); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
