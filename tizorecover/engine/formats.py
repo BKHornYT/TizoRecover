@@ -19,27 +19,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
 from tizorecover.engine.results import Verdict
-
-KIB = 1024
-MIB = 1024 * 1024
-MIN_EXTENT = 32
-
-
-class ByteSource(Protocol):
-    size: int
-
-    def at(self, offset: int, length: int) -> bytes: ...
-
-
-@dataclass
-class Extent:
-    """How far a file of this type runs, and what we think of it."""
-
-    size: int
-    verdict: Verdict = Verdict.SUSPECT
-    notes: list[str] = field(default_factory=list)
-    complete: bool = True
-    ext: str | None = None   # the real type when the contents say more than the magic (NEF in a TIFF)
+from tizorecover.engine.formats_base import (  # noqa: F401 - re-exported, other modules import these from here
+    BLANK_BLOCK, KIB, MIB, MIN_EXTENT, ByteSource, Extent, Format, _ZERO_BLOCK, _until_blank)
 
 
 class ByteSourceView:
@@ -53,24 +34,6 @@ class ByteSourceView:
         if offset < 0 or length <= 0 or offset >= self.size:
             return b""
         return self._reader.read_at(offset, min(length, self.size - offset))
-
-
-@dataclass(eq=False)
-class Format:
-    name: str
-    ext: str
-    magics: tuple[bytes, ...]
-    max_size: int = 64 * MIB
-    footer: bytes | None = None
-    resolve: Callable[[ByteSource, int, int], Extent | None] | None = None
-    validate: Callable[[ByteSource, int, int], tuple[Verdict, list[str]]] | None = None
-    category: str = "document"
-    confidence: float = 0.5
-    back: int = 0
-    # Cheap test on the bytes already in memory (``buf`` holds the hit at
-    # ``i``). False rejects without touching the disk; whatever it cannot see
-    # (the header runs past ``buf``) must answer True and leave it to resolve.
-    quick: Callable[[bytes, int], bool] | None = None
 
 
 def _s8(src: ByteSource, off: int, n: int) -> bytes:
@@ -121,33 +84,6 @@ def _printable(data: bytes, ratio: float = 0.85) -> bool:
         return False
     ok = sum(1 for b in data if 32 <= b < 127 or b in (9, 10, 13))
     return ok / len(data) >= ratio
-
-
-BLANK_BLOCK = 4096
-_ZERO_BLOCK = b"\x00" * BLANK_BLOCK
-
-
-def _until_blank(src: ByteSource, off: int, limit: int, cap: int) -> int:
-    """Where data that has no length field most likely ends.
-
-    Compressed media never holds 4 KiB of zeros, but the free space after a
-    deleted file usually does, so the first zero block (or ``limit``, or
-    ``cap``) is the best end there is. Returns an absolute offset.
-    """
-    end = min(limit, src.size, off + cap)
-    pos = off
-    step = 1 * MIB
-    while pos < end:
-        window = src.at(pos, min(step + BLANK_BLOCK, end - pos))
-        if not window:
-            break
-        idx = window.find(_ZERO_BLOCK)
-        if idx >= 0:
-            return pos + idx
-        if len(window) <= BLANK_BLOCK:
-            break
-        pos += len(window) - BLANK_BLOCK
-    return end
 
 
 def _have(buf: bytes, i: int, n: int) -> bool:
@@ -1200,7 +1136,6 @@ def _xml_walk(src: ByteSource, off: int, limit: int) -> Extent | None:
     return None
 
 
-
 # --------------------------------------------------------------------------
 # TIFF and camera RAW (CR2, NEF, ARW, DNG, PEF, SRW, ORF, RW2) + Fuji RAF
 # --------------------------------------------------------------------------
@@ -1735,6 +1670,11 @@ FORMATS: tuple[Format, ...] = (
     Format("mp3", "mp3", (b"ID3", b"\xff\xfb", b"\xff\xfa", b"\xff\xf3", b"\xff\xf2"), 64 * MIB,
            None, _mp3_walk, None, "audio", 0.55, quick=_mp3_quick),
 )
+
+# More types (0.7.0): defined in formats_extra.py, which uses the helpers above.
+from tizorecover.engine.formats_extra import extra_formats  # noqa: E402
+
+FORMATS = FORMATS + extra_formats()
 
 BY_MAGIC: dict[bytes, list[Format]] = {}
 for _fmt in FORMATS:

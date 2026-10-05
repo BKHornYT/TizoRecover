@@ -7,7 +7,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.samples_extra import EXTRA_BUILDERS
 from tests.samples_more import MORE_BUILDERS
+
+MORE_BUILDERS = {**MORE_BUILDERS, **EXTRA_BUILDERS}
 from tests.test_carver import _build_disk, _carve
 
 

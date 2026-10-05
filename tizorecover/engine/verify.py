@@ -36,19 +36,19 @@ ALIASES = {
 }
 
 CATEGORIES = {
-    "image": {"jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif",
+    "image": {"jp2", "j2k", "jxl", "jpg", "jpeg", "png", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif",
               "avif", "ico", "svg", "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "psd",
               "pef", "srw", "raf", "x3f", "nrw"},
-    "video": {"mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "flv", "3gp", "mts", "m2ts",
+    "video": {"mpg", "mpeg", "vob", "m1v", "m2v", "dav", "rm", "rmvb", "swf", "mxf", "mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv", "flv", "3gp", "mts", "m2ts",
               "mpg", "mpeg", "ts", "vob", "m4v"},
-    "audio": {"mp3", "wav", "flac", "ogg", "opus", "m4a", "aac", "wma", "aiff", "aif", "mid", "midi"},
-    "document": {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+    "audio": {"amr", "ape", "au", "caf", "mp3", "wav", "flac", "ogg", "opus", "m4a", "aac", "wma", "aiff", "aif", "mid", "midi"},
+    "document": {"djvu", "ps", "eps", "pst", "ost", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
                  "rtf", "txt", "md", "csv", "html", "htm", "xml", "json", "epub", "pages",
                  "key", "numbers", "log", "ini", "cfg", "yaml", "yml", "vsdx"},
     "archive": {"zip", "rar", "7z", "gz", "tgz", "tar", "bz2", "xz", "zst", "iso", "cab"},
     "code": {"py", "js", "ts", "c", "h", "cpp", "cs", "java", "go", "rs", "php", "rb",
              "sh", "ps1", "bat", "css", "lua", "kt", "swift", "sql"},
-    "program": {"exe", "dll", "msi", "sys", "elf", "apk", "jar", "so"},
+    "program": {"dex", "exe", "dll", "msi", "sys", "elf", "apk", "jar", "so"},
 }
 EXT_CATEGORY = {ext: cat for cat, exts in CATEGORIES.items() for ext in exts}
 
