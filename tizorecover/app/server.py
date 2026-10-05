@@ -132,7 +132,8 @@ class App:
         self.job_serial += 1
         if resume is not None and resume.get("mode") == DEEP:
             mode = DEEP
-        self.job = ScanJob(drive, mode, resume=resume, autosave=tzscan.auto_path(drive)).start()
+        self.job = ScanJob(drive, mode, resume=resume, autosave=tzscan.auto_path(drive),
+                           free_only=bool(self.load_prefs().get("free_only", True))).start()
 
     def search_partitions(self, target: str, thorough: bool) -> str | None:
         """Start a lost-partition search. Returns an error message, or None."""
@@ -271,6 +272,30 @@ class App:
             best = max(others, key=lambda d: d.free)
             return f"{best.letter}:\\TizoRecover {stamp}"
         return ""
+
+    PREF_DEFAULTS = {"free_only": True, "simplify": True, "updates": True, "theme": "system", "recycle_menu": False}
+
+    def prefs_path(self) -> str:
+        return os.path.join(os.path.dirname(tzscan.sessions_dir()), "prefs.json")
+
+    def load_prefs(self) -> dict:
+        prefs = dict(self.PREF_DEFAULTS)
+        try:
+            with open(self.prefs_path(), encoding="utf-8") as fh:
+                prefs.update({k: v for k, v in json.load(fh).items() if k in self.PREF_DEFAULTS})
+        except (OSError, ValueError):
+            pass
+        prefs["recycle_menu"] = _recycle_menu_on()
+        return prefs
+
+    def save_prefs(self, changes: dict) -> dict:
+        prefs = self.load_prefs()
+        if "recycle_menu" in changes and bool(changes["recycle_menu"]) != prefs["recycle_menu"]:
+            _set_recycle_menu(bool(changes["recycle_menu"]))
+        prefs.update({k: changes[k] for k in changes if k in self.PREF_DEFAULTS and k != "recycle_menu"})
+        with open(self.prefs_path(), "w", encoding="utf-8") as fh:
+            json.dump({k: v for k, v in prefs.items() if k != "recycle_menu"}, fh)
+        return self.load_prefs()
 
     def destinations(self) -> list[dict]:
         """Disk Drill's destination list: every other drive with a letter, then the usual folders.
@@ -558,6 +583,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(d)
         if path == "/api/fix/watch":
             return self._json(app.watch.status() if app.watch else {"state": "idle"})
+        if path == "/api/prefs":
+            return self._json(app.load_prefs())
         if path == "/api/destinations":
             return self._json({"destinations": app.destinations()})
         if path == "/api/suggest-dest":
@@ -727,6 +754,11 @@ class Handler(BaseHTTPRequestHandler):
             drive = drives_mod.image_drive(p)
             app.images = [d for d in app.images if d.id != drive.id] + [drive]
             return self._json({"drive": drive.to_dict()})
+        if path == "/api/prefs":
+            try:
+                return self._json(app.save_prefs(dict(body)))
+            except (OSError, RuntimeError) as exc:
+                return self._error(str(exc))
         if path == "/api/check-dest":
             dest = str(body.get("dest", ""))
             result = self._dest_problem(dest)
@@ -971,6 +1003,42 @@ def relaunch_as_admin() -> bool:
         threading.Timer(0.5, lambda: os._exit(0)).start()
         return True
     return False
+
+
+# "Quick access": a Recover deleted files entry on the Recycle Bin's right-click menu (per user, no admin).
+_RECYCLE_KEY = r"Software\Classes\CLSID\{645FF040-5081-101B-9F08-00AA002F954E}\shell\TizoRecover"
+
+
+def _recycle_menu_on() -> bool:
+    if sys.platform != "win32":
+        return False
+    import winreg
+    try:
+        winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RECYCLE_KEY))
+        return True
+    except OSError:
+        return False
+
+
+def _set_recycle_menu(on: bool) -> None:
+    if sys.platform != "win32":
+        raise RuntimeError("The Recycle Bin menu is a Windows feature.")
+    if on and not getattr(sys, "frozen", False):
+        raise RuntimeError("Only the installed app can add itself to the Recycle Bin menu.")
+    import winreg
+    if not on:
+        for sub in (_RECYCLE_KEY + "\\command", _RECYCLE_KEY):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
+            except OSError:
+                pass
+        return
+    exe = sys.executable
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _RECYCLE_KEY) as key:
+        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "Recover deleted files with TizoRecover")
+        winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, exe)
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _RECYCLE_KEY + "\\command") as key:
+        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f'"{exe}"')
 
 
 def _gb(n: int) -> str:

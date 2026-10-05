@@ -243,7 +243,7 @@ function setTheme(t) {
   themeMode = THEME_NEXT[t] ? t : "system";
   if (themeMode === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = themeMode;
-  $("#theme").innerHTML = `${icon(THEME_ICON[themeMode])}${THEME_TITLE[themeMode]}`;
+  if ($("#pref-theme")) $("#pref-theme").value = themeMode;
   try { localStorage.setItem("tizo-theme2", themeMode); } catch {}
 }
 (() => {
@@ -251,7 +251,7 @@ function setTheme(t) {
   try { t = localStorage.getItem("tizo-theme2") || "system"; } catch {}
   setTheme(t);
 })();
-$("#theme").onclick = () => { setTheme(THEME_NEXT[themeMode]); $("#app-menu").hidden = true; };
+
 
 /* ---------- state ---------- */
 const S = {
@@ -350,11 +350,11 @@ function markNav() {
 $("#menu-btn").onclick = (e) => { e.stopPropagation(); $("#app-menu").hidden = !$("#app-menu").hidden; };
 document.addEventListener("click", (e) => { if (!e.target.closest("#app-menu")) $("#app-menu").hidden = true; });
 $$("#app-menu [data-menu]").forEach((b) => {
-  if (b.dataset.menu === "theme") return;
   b.onclick = async () => {
     $("#app-menu").hidden = true;
     const what = b.dataset.menu;
     if (what === "image") return $("#open-image").click();
+    if (what === "prefs") return openPrefs();
     if (what === "tzscan") return pickSavedScan();
     if (what === "update") {
       const u = await api("/api/update").catch(() => null);
@@ -390,8 +390,32 @@ async function init() {
   loadDrives(false);
   api("/api/partitions").then((p) => { if (p.state === "running") pollParts(); }).catch(() => {});
   setInterval(() => api("/api/ping").catch(() => {}), 10000);
-  setTimeout(checkUpdate, 1500);
+  S.prefs = await api("/api/prefs").catch(() => ({}));
+  if (S.prefs.updates !== false) setTimeout(checkUpdate, 1500);
 }
+
+/* ---------- preferences (Disk Drill's General page) ---------- */
+async function openPrefs() {
+  S.prefs = await api("/api/prefs").catch(() => S.prefs || {});
+  $$("#prefs-dialog [data-pref]").forEach((el) => { el.checked = !!S.prefs[el.dataset.pref]; });
+  $("#pref-theme").value = themeMode;
+  $("#pref-msg").innerHTML = "";
+  $("#prefs-dialog").showModal();
+}
+$$("#prefs-dialog [data-pref]").forEach((el) => {
+  el.onchange = async () => {
+    try {
+      S.prefs = await api("/api/prefs", { [el.dataset.pref]: el.checked });
+      $("#pref-msg").innerHTML = "";
+      if (el.dataset.pref === "simplify" && S.screen === "review") refilter();
+    } catch (e) {
+      el.checked = !el.checked;
+      $("#pref-msg").innerHTML = `<div class="msg bad">${icon("alert")}<span>${esc(e.message)}</span></div>`;
+    }
+  };
+});
+$("#pref-theme").onchange = (e) => { setTheme(e.target.value); api("/api/prefs", { theme: e.target.value }).catch(() => {}); };
+$("#pref-close").onclick = () => $("#prefs-dialog").close();
 
 async function checkUpdate() {
   const u = await api("/api/update").catch(() => null);
@@ -1480,6 +1504,7 @@ function refilter() {
   S.shown = base.filter(catMatch);
   sortFiles(S.shown);
   S.tree = buildTree(S.shown);
+  if (!S.prefs || S.prefs.simplify !== false) { compactTree(S.tree); setDepths(S.tree, -1); }
   recount();
   flatten();
   renderReviewHead();
@@ -1555,6 +1580,22 @@ function buildTree(files) {
     node.files.push(it);
   }
   return root;
+}
+
+function compactTree(node) {
+  for (const [name, kid] of [...node.kids]) {
+    let k = kid;
+    while (!k.group && k.files.length === 0 && k.kids.size === 1) {
+      const only = [...k.kids.values()][0];
+      k = { ...only, name: `${k.name} › ${only.name}`, deleted: k.deleted || only.deleted };
+    }
+    if (k !== kid) { node.kids.delete(name); node.kids.set(k.name, k); }
+    compactTree(k);
+  }
+}
+function setDepths(node, depth) {
+  node.depth = depth;
+  for (const k of node.kids.values()) setDepths(k, depth + 1);
 }
 
 function recount(node = S.tree) {
@@ -1685,7 +1726,7 @@ $("#crumbs").onclick = (e) => {
   renderList();
 };
 function enterFolder(node) {
-  S.gpath = node.key.split("/");
+  S.gpath = [...S.gpath, node.name];
   viewport.scrollTop = 0;
   renderList();
 }

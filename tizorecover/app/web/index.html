@@ -18,7 +18,7 @@
       <button data-menu="image">Attach disk image…</button>
       <button data-menu="tzscan">Open a scan file…</button>
       <hr>
-      <button id="theme" data-menu="theme"></button>
+      <button data-menu="prefs">Preferences…</button>
       <button data-menu="update">Check for updates…</button>
       <button data-menu="logs">TizoRecover logs</button>
       <button data-menu="help">Help &amp; support</button>
@@ -427,6 +427,28 @@
 </dialog>
 
 <div class="ctx" id="ctx" hidden></div>
+
+<dialog id="prefs-dialog">
+  <div class="dlg-head"><h2>General</h2><p>Configure TizoRecover general settings</p></div>
+  <div class="dlg-body prefs">
+    <h4>Scanning:</h4>
+    <label class="pref"><input type="checkbox" class="check" data-pref="free_only"><span><b>Deep-scan free space only</b>
+      <small>The deep scan searches only the space the file system calls free. Faster, but it finds fewer copies of files that still exist.</small></span></label>
+    <label class="pref"><input type="checkbox" class="check" data-pref="simplify"><span><b>Optimize folder structure after scanning</b>
+      <small>A folder that only holds one other folder is shown as one row ("Photos › 2024"), for a compact list.</small></span></label>
+    <h4>Updates:</h4>
+    <label class="pref"><input type="checkbox" class="check" data-pref="updates"><span><b>Check for updates automatically on startup</b></span></label>
+    <h4>Quick access:</h4>
+    <label class="pref"><input type="checkbox" class="check" data-pref="recycle_menu"><span><b>Start TizoRecover from the Recycle Bin</b>
+      <small>Adds "Recover deleted files with TizoRecover" to the Recycle Bin's right-click menu.</small></span></label>
+    <h4>Change interface language</h4>
+    <select id="pref-lang" disabled><option>English</option></select>
+    <h4>Theme</h4>
+    <select id="pref-theme"><option value="system">Auto (same as Windows)</option><option value="light">Light</option><option value="dark">Dark</option></select>
+    <div id="pref-msg"></div>
+  </div>
+  <div class="dlg-foot"><div class="grow"></div><button class="btn primary" id="pref-close">Done</button></div>
+</dialog>
 
 <dialog id="confirm-dialog">
   <div class="dlg-head"><h2 id="cf-title"></h2><p id="cf-text"></p></div>

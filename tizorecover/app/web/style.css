@@ -1063,3 +1063,14 @@ body { font-size: 14px; }
 .more-banner .grow b { display: block; margin-bottom: 2px; }
 .more-banner .grow span { color: var(--muted); font-size: 13px; }
 .more-banner .btn { white-space: nowrap; }
+
+/* preferences */
+#prefs-dialog { width: min(540px, 94vw); }
+.prefs h4 { margin: 14px 0 6px; font-size: 14px; font-weight: 650; }
+.prefs h4:first-child { margin-top: 0; }
+.pref { display: flex; gap: 10px; align-items: flex-start; padding: 4px 0; cursor: pointer; }
+.pref input { margin-top: 3px; }
+.pref span { display: flex; flex-direction: column; }
+.pref b { font-weight: 550; }
+.pref small { color: var(--muted); font-size: 12.5px; }
+.prefs select { height: 32px; min-width: 220px; border-radius: 6px; border: 1px solid var(--line2); background: var(--surface2); color: var(--text); padding: 0 8px; }

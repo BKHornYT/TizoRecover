@@ -138,8 +138,9 @@ class ScanJob:
 
     def __init__(self, drive: Drive, mode: str = QUICK,
                  on_item: Callable[[Item], None] | None = None,
-                 resume: dict | None = None, autosave: str | None = None) -> None:
+                 resume: dict | None = None, autosave: str | None = None, free_only: bool = True) -> None:
         self.drive = drive
+        self.free_only = free_only            # False: the deep pass reads the whole volume, used space too
         self.mode = mode
         self.on_item = on_item
         self.resume = resume
@@ -660,7 +661,7 @@ class ScanJob:
                                  f"files by their content.")
 
     def _deep(self) -> None:
-        if self.allocation is not None:
+        if self.allocation is not None and self.free_only:
             ranges = list(self.allocation.free_ranges(MIN_FREE_RUN))
         else:
             ranges = [(0, self.src.size)]
