@@ -206,10 +206,12 @@ def test_stop_stops():
     import time
     fh = tempfile.NamedTemporaryFile(suffix=".img", delete=False)
     rng = random.Random(3)
-    fh.write(bytes(rng.getrandbits(8) for _ in range(1 << 20)) * 96)     # 96 MiB of noise: a long deep scan
+    fh.write(bytes(rng.getrandbits(8) for _ in range(1 << 20)) * 768)    # 768 MiB of noise: a long deep scan
     fh.close()
     job = ScanJob(image_drive(fh.name), DEEP).start()
-    time.sleep(0.8)
+    t = time.time()                      # stop once the deep stage is underway (it runs at 200+ MB/s now)
+    while time.time() - t < 10 and not (job.progress.stage == "deep" and job.progress.done > 0):
+        time.sleep(0.02)
     t = time.time()
     job.stop()
     job.wait(10)

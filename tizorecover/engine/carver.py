@@ -15,12 +15,12 @@ Two passes run here:
 from __future__ import annotations
 
 import bisect
-import re
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Iterable, Iterator
 
 from tizorecover.engine.blockdev import DEFAULT_CHUNK, DriveGoneError
 from tizorecover.engine.formats import BY_MAGIC, FORMATS, MAX_MAGIC, Format, Extent
+from tizorecover.engine.magicsearch import find_magics
 from tizorecover.engine.results import FileCandidate, Strategy, Verdict
 
 MIN_SIZE = 8
@@ -94,32 +94,6 @@ def _blank(buf: bytes) -> bool:
     return buf == ref
 
 
-def _trie_pattern(words: list[bytes]) -> bytes:
-    """One regex shaped like a prefix tree of the magics.
-
-    Python's ``re`` tries the branches of a flat alternation one by one at
-    every byte; factoring the shared prefixes lets it rule out most positions
-    on the first byte (~35% faster over real data, same hits).
-    """
-    trie: dict = {}
-    for word in words:
-        node = trie
-        for b in word:
-            node = node.setdefault(b, {})
-        node[None] = True
-
-    def build(node: dict) -> bytes:
-        alts = [re.escape(bytes([b])) + build(child)
-                for b, child in sorted((k, v) for k, v in node.items() if k is not None)]
-        if not alts:
-            return b""
-        body = alts[0] if len(alts) == 1 else b"(?:" + b"|".join(alts) + b")"
-        return b"(?:" + body + b")?" if None in node else body
-
-    return build(trie)
-
-
-_MAGIC_RE = re.compile(_trie_pattern(list(BY_MAGIC)))
 # The regex returns the longest magic at a position; a shorter magic that is
 # its prefix must still get its turn.
 _MAGIC_FORMATS = {m: [f for w in BY_MAGIC if m.startswith(w) for f in BY_MAGIC[w]] for m in BY_MAGIC}
@@ -128,13 +102,13 @@ _MAGIC_FORMATS = {m: [f for w in BY_MAGIC if m.startswith(w) for f in BY_MAGIC[w
 def _header_hits(buf: bytes, buf_off: int, formats: set[Format]) -> Iterator[tuple[int, int, Format]]:
     """Every (magic index, file offset, format) whose magic is in ``buf``, in disk order.
 
-    One regex pass finds all magics at C speed; each hit is then put through
+    One regex pass finds all magics at C speed (on several cores, see
+    ``magicsearch``); each hit is then put through
     the format's in-memory ``quick`` check, so the common false alarms (an
     ``MZ`` or an MPEG frame sync inside some video) never cost a disk read.
     """
-    for m in _MAGIC_RE.finditer(buf):
-        idx = m.start()
-        for fmt in _MAGIC_FORMATS[m.group()]:
+    for idx, stop in find_magics(buf):
+        for fmt in _MAGIC_FORMATS[bytes(buf[idx:stop])]:
             if fmt not in formats:
                 continue
             i = idx - fmt.back
