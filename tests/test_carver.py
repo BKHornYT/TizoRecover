@@ -136,6 +136,53 @@ def test_junk_produces_no_valid_files():
     return [] if not valid else [f"{len(valid)} false positives"]
 
 
+def _overclaiming_exe(claim: int) -> bytes:
+    """A PE whose one section says it is ``claim`` bytes long: a carved leftover that claims too much."""
+    import struct
+    pe = bytearray(0x200)
+    pe[0:2] = b"MZ"
+    struct.pack_into("<I", pe, 0x3C, 0x40)
+    pe[0x40:0x44] = b"PE\x00\x00"
+    coff = 0x44
+    struct.pack_into("<HH", pe, coff, 0x14C, 1)              # machine, one section
+    struct.pack_into("<H", pe, coff + 16, 0xE0)              # optional header size
+    opt = coff + 20
+    struct.pack_into("<H", pe, opt, 0x10B)
+    struct.pack_into("<I", pe, opt + 60, 0x200)              # SizeOfHeaders
+    sec = opt + 0xE0
+    struct.pack_into("<II", pe, sec + 16, claim, 0x200)      # SizeOfRawData, PointerToRawData
+    return bytes(pe)
+
+
+def test_cluster_start_inside_claim():
+    print("a file at a cluster start inside bytes an earlier carved file claims")
+    rng = random.Random(4)
+    image = bytearray(_overclaiming_exe(40000)) + rng.randbytes(8192 - 0x200)   # the exe "runs" to ~40 KB
+    png_at = len(image)                                        # 8192: a cluster start (4 KiB clusters)
+    png = samples.make_png()
+    image += png + rng.randbytes(40000)
+    with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as fh:
+        fh.write(image)
+        path = fh.name
+    try:
+        reader = FileBlockReader(path, "test")
+        try:
+            src = ByteSourceView(reader)
+            plain = [(c.data_offset, c.ext) for c in carve_range(src, "t")]
+            aligned = [(c.data_offset, c.ext, c.size) for c in carve_range(src, "t", align=(4096, 0))]
+        finally:
+            reader.close()
+    finally:
+        os.unlink(path)
+    fails = []
+    if (png_at, "png") in plain:
+        fails.append("without a cluster layout the claimed bytes should be skipped (PhotoRec's rule)")
+    if (png_at, "png", len(png)) not in aligned:
+        fails.append(f"png at the cluster start not found inside the claim: {aligned}")
+    print("   ", "ok" if not fails else fails)
+    return fails
+
+
 def main() -> int:
     failures: list[str] = []
     for test in (
@@ -144,6 +191,7 @@ def main() -> int:
         test_truncated_is_partial,
         test_naming,
         test_junk_produces_no_valid_files,
+        test_cluster_start_inside_claim,
     ):
         failures.extend(test())
     print()

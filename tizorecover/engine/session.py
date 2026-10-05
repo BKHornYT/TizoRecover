@@ -441,6 +441,19 @@ class ScanJob:
             self.on_item(twin)
         return True
 
+    def _cluster_layout(self) -> tuple[int, int] | None:
+        """(cluster size, where clusters start) of the volume, for the carver: files start at a cluster."""
+        try:
+            if self.filesystem == "ntfs":
+                boot = ntfs_fs.parse_boot_sector(self.src)
+                return (boot.cluster_size, 0) if boot is not None else None
+            if self.filesystem in ("fat", "fat32", "fat12", "fat16"):
+                info = fat_fs.find_fat(self.src)
+                return (info.cluster_size, info.cluster_offset(2)) if info is not None else None
+        except (OSError, ValueError):
+            return None
+        return None
+
     def _loose_records_found(self) -> None:
         """Add the files the old MFT records describe (deep scan of an NTFS volume, at its end)."""
         if self.loose is None:
@@ -677,6 +690,8 @@ class ScanJob:
             self.progress.done = skip
         stop = self._stop.is_set
         on_record = None
+        on_chunk = None
+        align = self._cluster_layout()
         if self.filesystem == "ntfs":
             if self.loose is None:
                 boot = ntfs_fs.parse_boot_sector(self.src)
@@ -695,6 +710,7 @@ class ScanJob:
                 self.loose = fat_fs.LooseDirs(self.src, info) if info is not None else None
             if self.loose is not None:
                 on_record = self.loose.add
+                on_chunk = self.loose.scan_chunk
         for offset, length in ranges:
             if stop():
                 break
@@ -711,6 +727,7 @@ class ScanJob:
             if start >= offset + length:
                 continue
             for cand in carve_range(self.src, self.drive.id, start=start, end=offset + length,
-                                    progress=self._advance, should_stop=stop, on_record=on_record):
+                                    progress=self._advance, should_stop=stop, on_record=on_record,
+                                    on_chunk=on_chunk, align=align):
                 self._add(cand)
         self._loose_records_found()

@@ -12,6 +12,7 @@ assumption, not passed off as fact.
 
 from __future__ import annotations
 
+import re
 import struct
 import time
 from dataclasses import dataclass
@@ -483,6 +484,8 @@ def _extension(name: str) -> str:
 
 # The first entry of every FAT subdirectory: "." (dot, ten spaces) with the directory bit.
 DIR_MAGIC = b".          \x10"
+# A long-name slot: sequence byte, five UTF-16 characters, attribute 0x0F, type 0, checksum, ..., cluster 0.
+_LFN_SLOT = re.compile(rb"[\x01-\x14\x41-\x54\xe5].{10}\x0f\x00.{13}\x00\x00", re.S)
 
 
 def _plausible_slot(slot: bytes) -> bool:
@@ -516,12 +519,56 @@ class LooseDirs:
         self.fat = fat
         self.table = load_table(src, fat)
         self.dirs: dict[int, int] = {}   # cluster -> parent cluster (0 = the root)
+        self.loose_clusters: set[int] = set()   # clusters full of entries that are not a folder's first
         self.offsets: list[int] = []
         self.mismatched = 0
 
-    def add(self, offset: int, raw: bytes) -> bool:
+    def _cluster_at(self, offset: int) -> int | None:
         fat = self.fat
-        if offset % fat.bytes_per_sector or len(raw) < 64 or raw[:12] != DIR_MAGIC:
+        base = fat.cluster_offset(2)
+        if offset < base or (offset - base) % fat.cluster_size:
+            return None
+        return 2 + (offset - base) // fat.cluster_size
+
+    def scan_chunk(self, pos: int, buf: bytes, length: int) -> None:
+        """A later cluster of a big folder has no "." to spot it by, but it is full of entries; most of them
+        long names (TestDisk and Disk Drill find these too). Count long-name slots per cluster."""
+        fat = self.fat
+        per: dict[int, int] = {}
+        base = fat.cluster_offset(2)
+        for m in _LFN_SLOT.finditer(buf, 0, length):
+            off = pos + m.start()
+            if off % 32 or off < base:
+                continue
+            c = 2 + (off - base) // fat.cluster_size
+            per[c] = per.get(c, 0) + 1
+        for c, n in per.items():
+            if n < 2 or c in self.dirs or c in self.loose_clusters or len(self.loose_clusters) >= self.MAX:
+                continue
+            if c < len(self.table) and self.table[c] != 0:
+                continue                 # in use today: today's file table already lists it
+            off = fat.cluster_offset(c)
+            head = buf[off - pos: off - pos + 512] if pos <= off and off + 512 <= pos + len(buf) else b""
+            if self.add(off, head or None):
+                pass
+
+    def add(self, offset: int, raw: bytes | None) -> bool:
+        fat = self.fat
+        if raw is None:
+            return False
+        if raw[:12] != DIR_MAGIC:
+            # Not a folder's first cluster: maybe a later one, full of entries.
+            c = self._cluster_at(offset)
+            if c is None or c in self.loose_clusters or c in self.dirs or len(raw) < 128:
+                return False
+            if not all(_plausible_slot(raw[i:i + 32]) for i in range(0, min(len(raw), 512), 32)):
+                return False
+            if sum(1 for i in range(0, min(len(raw), 512), 32) if raw[i + 0x0B] == ATTR_LFN) < 2:
+                return False
+            self.loose_clusters.add(c)
+            self.offsets.append(offset)
+            return True
+        if offset % fat.bytes_per_sector or len(raw) < 64:
             return False
         if raw[32:43] != b"..         " or not raw[43] & DIR_ATTR:
             return False
@@ -537,9 +584,9 @@ class LooseDirs:
         return True
 
     def __len__(self) -> int:
-        return len(self.dirs)
+        return len(self.dirs) + len(self.loose_clusters)
 
-    def _entries(self, src, cluster: int) -> list[DirEntry]:
+    def _entries(self, src, cluster: int, covered: set[int] | None = None) -> list[DirEntry]:
         """A lost folder's entries: its first cluster, then the free clusters after it while they still
         read as entries (its chain was freed, so this is the same guess undelete tools make for files)."""
         fat = self.fat
@@ -557,6 +604,8 @@ class LooseDirs:
             if c != cluster and not all(_plausible_slot(chunk[i:i + 32]) for i in range(0, min(len(chunk), 256), 32)):
                 break
             raw += chunk
+            if covered is not None:
+                covered.add(c)
             if any(chunk[i] == 0 for i in range(0, len(chunk), 32)):
                 break                    # an end-of-folder marker
             c += 1
@@ -567,11 +616,17 @@ class LooseDirs:
         fat = self.fat
         listing: dict[int, list[DirEntry]] = {}
         names: dict[int, str] = {}
+        covered: set[int] = set()
         for cluster in self.dirs:
             if should_stop is not None and should_stop():
                 return
-            entries = self._entries(src, cluster)
-            listing[cluster] = entries
+            listing[cluster] = self._entries(src, cluster, covered)
+        # Later clusters of folders whose first cluster is gone (or not next to them): each a folder of its own.
+        for cluster in sorted(self.loose_clusters - covered):
+            if cluster in covered:
+                continue
+            listing[cluster] = self._entries(src, cluster, covered)
+        for entries in listing.values():
             for e in entries:
                 if e.is_dir and e.cluster >= 2 and e.short_name not in (".", ".."):
                     names.setdefault(e.cluster, _sanitise(e.name))
@@ -586,6 +641,8 @@ class LooseDirs:
                 parts.append(names.get(c) or f"Lost{c}")
                 parent = self.dirs.get(c)
                 if parent is None:
+                    if not parts[-1].startswith("Lost"):
+                        return "/".join(["Orphans", *reversed(parts)])
                     break
                 if parent in (0, root):                        # its parent was the root
                     top = list(reversed(parts))

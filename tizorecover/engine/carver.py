@@ -201,17 +201,25 @@ def carve_range(
     should_stop: Callable[[], bool] | None = None,
     on_found: Callable[[FileCandidate], None] | None = None,
     on_record: Callable[[int, bytes], None] | None = None,
+    on_chunk: Callable[[int, bytes, int], None] | None = None,
+    align: tuple[int, int] | None = None,
 ) -> Iterator[FileCandidate]:
     """Forward-carve every recognisable file in ``[start, end)``.
 
-    Hits are handled in disk order and a found file's bytes are skipped (not
-    even read), the way PhotoRec does it: a photo embedded in a video is part
-    of the video, not a file of its own, and a long video costs no searching.
+    Hits are handled in disk order and a found file's bytes are skipped, the
+    way PhotoRec does it: a photo embedded in a video is part of the video,
+    not a file of its own. But a file carved from leftovers often claims more
+    than it really was (its end could not be pinned down), so with ``align``
+    = ``(cluster size, where clusters start)`` a header exactly at a cluster
+    start inside claimed bytes is still tried, and kept when its file checks
+    out complete: files on a disk always start at a cluster. On the owner's
+    stick that was 1,150 PNGs hidden behind long carved .gz/.exe files.
 
     ``on_record(offset, bytes)`` hears about every file-system record (an
     NTFS ``FILE`` record, a FAT folder's first cluster) in the space searched,
-    with at least 4 KiB from its start;
-    those are reported even inside a carved file's bytes that were read.
+    with at least 4 KiB from its start; ``on_chunk(offset, bytes, length)``
+    sees every chunk read (the first ``length`` bytes are its own). With
+    either, claimed bytes are read too (records hide there as well).
     """
     wanted = tuple(formats) if formats is not None else FORMATS
     wanted_set = set(wanted)
@@ -222,28 +230,56 @@ def carve_range(
     pulses = 0
     reader = _Prefetch(src)
     walk_src = CachedSource(src)
+    read_claimed = on_record is not None or on_chunk is not None or align is not None
+
+    def at_cluster(offset: int) -> bool:
+        return align is not None and offset >= align[1] and (offset - align[1]) % align[0] == 0
+
+    def attempt(fmt: Format, offset: int, strict: bool) -> FileCandidate | None:
+        resolver = fmt.resolve
+        if resolver is None:
+            return None
+        try:
+            extent = resolver(walk_src, offset, end)
+        except DriveGoneError:
+            raise
+        except Exception:
+            return None
+        if extent is None or extent.size < min_size or offset + extent.size > src.size:
+            return None
+        if strict and not extent.complete:
+            return None
+        cand = _candidate(fmt, walk_src, offset, extent, volume)
+        if strict and cand.verdict is not Verdict.VALID:
+            return None
+        return cand
+
     try:
         while pos < end:
             if should_stop is not None and should_stop():
                 return
-            if skip_until > pos:
+            claimed = skip_until > pos
+            if claimed and not read_claimed:
                 # Inside a file already found: jump over it without reading.
                 jump = min(skip_until, end) - pos
                 pos += jump
                 if progress is not None:
                     progress(jump)
                 continue
-            want = min(chunk + overlap, end - pos)
+            step = min(chunk, (min(skip_until, end) if claimed else end) - pos)
+            want = min(step + overlap, end - pos)
             buf = reader.get(pos, want)
             if not buf:
                 return
-            if pos + chunk < end:
-                reader.ahead(pos + chunk, min(chunk + overlap, end - pos - chunk))
+            if pos + step < end:
+                reader.ahead(pos + step, min(chunk + overlap, end - pos - step))
+            if on_chunk is not None:
+                on_chunk(pos, buf, step)
             # Empty space (zeros, or 0xFF on erased flash) holds no headers; one
             # comparison skips it at memory speed instead of a search.
             if not _blank(buf):
                 for idx, offset, fmt in _header_hits(buf, pos, wanted_set, on_record is not None):
-                    if idx >= chunk and pos + chunk < end:
+                    if idx >= step and pos + step < end:
                         continue                         # seen again, whole, in the next chunk
                     if fmt is None:
                         raw = buf[idx:idx + RECORD_READ]
@@ -257,30 +293,22 @@ def carve_range(
                             progress(0)
                         if should_stop is not None and should_stop():
                             return
-                    if offset < max(start, skip_until) or offset >= end:
+                    if offset < start or offset >= end:
                         continue
-                    resolver = fmt.resolve
-                    if resolver is None:
+                    inside = offset < skip_until
+                    if inside and not at_cluster(offset):
                         continue
-                    try:
-                        extent = resolver(walk_src, offset, end)
-                    except DriveGoneError:
-                        raise
-                    except Exception:
+                    cand = attempt(fmt, offset, strict=inside)
+                    if cand is None:
                         continue
-                    if extent is None or extent.size < min_size:
-                        continue
-                    stop = offset + extent.size
-                    if stop > src.size:
-                        continue
-                    skip_until = stop
-                    cand = _candidate(fmt, walk_src, offset, extent, volume)
+                    if inside:
+                        cand.reasons.append("starts at a cluster inside bytes an earlier carved file claimed")
+                    skip_until = max(skip_until, offset + cand.size)
                     if on_found is not None:
                         on_found(cand)
                     yield cand
-            # A file found here may run past this chunk; the jump at the top
-            # of the loop counts the rest of it.
-            step = min(chunk, end - pos)
+            # A file found here may run past this chunk; the next round reads
+            # (or, with nothing to look for there, jumps over) the rest of it.
             pos += step
             if progress is not None:
                 progress(step)
