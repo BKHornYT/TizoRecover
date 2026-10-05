@@ -60,7 +60,16 @@ const P = {
   plug: '<path d="M9 2v5M15 2v5M7 7h10v4a5 5 0 0 1-10 0zM12 16v6"/>',
   eject: '<path d="M5 17h14v2H5zM12 5l7 9H5z"/>',
   history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+  encrypted: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4M12 15v2"/>',
+  hex: '<path d="M9 4L5 20M19 4l-4 16M4 9h16M3 15h16"/>',
+  starfull: '<path fill="currentColor" d="M12 3l2.7 5.6 6.2.9-4.5 4.4 1 6.1L12 17.3 6.6 20l1-6.1L3.1 9.5l6.2-.9z"/>',
+  starhalf: '<path d="M12 3l2.7 5.6 6.2.9-4.5 4.4 1 6.1L12 17.3 6.6 20l1-6.1L3.1 9.5l6.2-.9z"/><path fill="currentColor" d="M12 3v14.3L6.6 20l1-6.1L3.1 9.5l6.2-.9z"/>',
+  starempty: '<path d="M12 3l2.7 5.6 6.2.9-4.5 4.4 1 6.1L12 17.3 6.6 20l1-6.1L3.1 9.5l6.2-.9z"/>',
 };
+// Disk Drill's big yellow folder, for folder tiles in the grid.
+const BIG_FOLDER = '<svg class="bigfolder" viewBox="0 0 64 52"><path d="M4 8a4 4 0 0 1 4-4h16l6 6h26a4 4 0 0 1 4 4v4H4z" fill="#f2b20c"/><path d="M2 18a4 4 0 0 1 4-4h52a4 4 0 0 1 4 4v26a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4z" fill="#ffd34d"/><path d="M2 18a4 4 0 0 1 4-4h52a4 4 0 0 1 4 4v3H2z" fill="#ffe08a"/></svg>';
 const icon = (name, cls = "") =>
   `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${P[name] || P.other}</svg>`;
 function paintIcons(root = document) {
@@ -183,12 +192,43 @@ const CHANCE = {
   overwritten: { label: "Low", tip: "Its space now belongs to other files, or reads as blank. It will most likely not open." },
 };
 const CHANCE_ORDER = { good: 0, partial: 1, overwritten: 2 };
-const chance = (s) => `<span class="ch ${s}" title="${CHANCE[s].tip}"><i></i>${CHANCE[s].label}</span>`;
-const CATS = ["image", "video", "audio", "document", "archive", "code", "program", "other"];
-const CAT_LABEL = { image: "Pictures", video: "Video", audio: "Audio", document: "Documents", archive: "Archives", code: "Code", program: "Programs", other: "Other" };
-const CAT_ONE = { image: "Picture", video: "Video", audio: "Audio", document: "Document", archive: "Archive", code: "Code", program: "Program", other: "File" };
+// Like Disk Drill: a full, half or empty star.
+const STAR = { good: "starfull", partial: "starhalf", overwritten: "starempty" };
+const chance = (s) => `<span class="ch ${s}" title="${CHANCE[s].tip}">${icon(STAR[s], "st")}${CHANCE[s].label}</span>`;
+const star = (s) => `<span class="tstar ${s}" title="${CHANCE[s].label} chances">${icon(STAR[s])}</span>`;
+const CATS = ["image", "video", "audio", "document", "archive", "encrypted", "code", "program", "other"];
+const CAT_LABEL = { image: "Pictures", video: "Video", audio: "Audio", document: "Documents", archive: "Archives", encrypted: "Encrypted", code: "Code", program: "Programs", other: "Other" };
+const CAT_ONE = { image: "Picture", video: "Video", audio: "Audio", document: "Document", archive: "Archive", encrypted: "Encrypted file", code: "Code", program: "Program", other: "File" };
 const TILE_CATS = ["image", "video", "audio", "document", "archive", "other"];
 const tileCat = (c) => (TILE_CATS.includes(c) ? c : "other");
+// The sidebar has one more row than the dashboard: Encrypted, between Archives and Other.
+const NAV_CATS = ["image", "video", "audio", "document", "archive", "encrypted", "other"];
+const navCat = (c) => (NAV_CATS.includes(c) ? c : "other");
+const nfShort = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 1e4 ? 0 : 1)}K` : String(n || 0));
+// What Windows calls each type, as Disk Drill shows it in its Type column.
+const TYPE_NAME = {
+  jpg: "JPEG Image", jpeg: "JPEG Image", png: "PNG Image", gif: "GIF Image", bmp: "Bitmap Image", webp: "WebP Image",
+  heic: "HEIC Image", heif: "HEIF Image", tif: "TIFF Image", tiff: "TIFF Image", ico: "Icon", svg: "SVG Image", psd: "Photoshop Image",
+  cr2: "Canon RAW Image", cr3: "Canon RAW Image", nef: "Nikon RAW Image", arw: "Sony RAW Image", dng: "DNG RAW Image", raf: "Fujifilm RAW Image",
+  orf: "Olympus RAW Image", rw2: "Panasonic RAW Image", jp2: "JPEG 2000 Image", jxl: "JPEG XL Image", avif: "AVIF Image",
+  mp4: "MP4 Video", m4v: "MP4 Video", mov: "QuickTime Movie", avi: "AVI Video", mkv: "Matroska Video", webm: "WebM Video", wmv: "Windows Media Video",
+  flv: "Flash Video", "3gp": "3GP Video", mts: "AVCHD Video", m2ts: "AVCHD Video", ts: "TS Video File", mpg: "MPEG Video", mpeg: "MPEG Video",
+  vob: "DVD Video", m1v: "MPEG-1 Video", m2v: "MPEG-2 Video", dav: "CCTV Video", rm: "RealMedia Video", rmvb: "RealMedia Video", swf: "Flash Movie", mxf: "MXF Video",
+  mp3: "MP3 Audio", wav: "WAV Audio", flac: "FLAC Audio", ogg: "Ogg Audio", opus: "Opus Audio", m4a: "MPEG-4 Audio", aac: "AAC Audio",
+  wma: "Windows Media Audio", aiff: "AIFF Audio", aif: "AIFF Audio", mid: "MIDI Sequence", midi: "MIDI Sequence", amr: "AMR Audio", ape: "Monkey's Audio",
+  pdf: "PDF Document", doc: "Word 97-2003 Document", docx: "Word Document", xls: "Excel 97-2003 Worksheet", xlsx: "Excel Worksheet",
+  ppt: "PowerPoint 97-2003 Presentation", pptx: "PowerPoint Presentation", odt: "OpenDocument Text", ods: "OpenDocument Spreadsheet",
+  odp: "OpenDocument Presentation", rtf: "Rich Text Document", txt: "Text Document", md: "Markdown File", csv: "CSV File", log: "LOG File",
+  ini: "Configuration Settings", html: "HTML Document", htm: "HTML Document", xml: "XML Document", json: "JSON File", epub: "EPUB Book",
+  pst: "Outlook Data File", ost: "Outlook Data File", ps: "PostScript File", eps: "EPS Image", djvu: "DjVu Document",
+  zip: "ZIP Archive", rar: "RAR Archive", "7z": "7-Zip Archive", gz: "GZip Archive", tgz: "GZip Archive", tar: "TAR Archive", bz2: "BZip2 Archive",
+  xz: "XZ Archive", zst: "Zstandard Archive", iso: "Disc Image File", cab: "Cabinet File",
+  exe: "Application", dll: "Application Extension", msi: "Windows Installer Package", sys: "System File", apk: "Android Package", jar: "Java Archive",
+  dex: "Android Program", elf: "Linux Program",
+  p8: "Private Key", p12: "Personal Information Exchange", pfx: "Personal Information Exchange", pem: "Certificate or Key",
+  kdbx: "KeePass Database", kdb: "KeePass Database", gpg: "GnuPG Encrypted File", pgp: "PGP Encrypted File",
+};
+const typeName = (it) => TYPE_NAME[(it.ext || "").toLowerCase()] || (it.ext ? `${it.ext.toUpperCase()} File` : "File");
 const STAGE_LABEL = { paused: "Paused", starting: "Starting", opening: "Opening the drive", records: "Reading the file table", deep: "Searching free space", done: "Finished", stopped: "Stopped", failed: "Failed" };
 const catStyle = (c) => `style="--cc:var(--c-${c})"`;
 
@@ -234,9 +274,15 @@ const S = {
   showHidden: false,
   collapsed: new Set(),
   tips: true,
-  filters: { q: "", status: new Set(["good", "partial", "overwritten"]), size: "", date: "" },
+  filters: { q: "", status: new Set(["good", "partial", "overwritten"]), size: null, date: null },
+  showSystem: true,
+  hideDupes: false,
   sort: { key: "name", dir: 1 },
   view: "tree",
+  layout: "folders",
+  gpath: [],
+  gzoom: 150,
+  recovered: new Set(),
   toggled: new Map(),
   rows: [],
   shown: [],
@@ -1025,6 +1071,8 @@ function resetForScan(driveId, driveDict, mode = S.mode) {
   S.scan = null;
   S.items = [];
   S.changedSeen = 0;
+  S.recovered = new Set();
+  S.gpath = [];
   S.selected.clear();
   S.current = null;
   S.cat = null;
@@ -1130,16 +1178,16 @@ function renderNav() {
   const d = s.drive || {};
   const counts = {}, exts = {};
   for (const it of S.items) {
-    const c = tileCat(it.category);
+    const c = navCat(it.category);
     counts[c] = (counts[c] || 0) + 1;
     const e = (it.ext || "?").toLowerCase();
     (exts[c] ||= {})[e] = (exts[c][e] || 0) + 1;
   }
   S.navOpen ||= new Set();
   const row = (attrs, ic, label, n, cls = "", twisty = "") =>
-    `<button class="nav-item ${cls} ${n ? "" : "zero"}" data-goto="review" ${attrs}>${twisty}${icon(ic)}<span class="grow">${esc(label)}</span>${n ? `<span class="nav-pill">${nf(n)}</span>` : ""}</button>`;
+    `<button class="nav-item ${cls} ${n ? "" : "zero"}" data-goto="review" ${attrs}>${twisty}${icon(ic)}<span class="grow">${esc(label)}</span>${n ? `<span class="nav-pill" title="${nf(n)}">${nfShort(n)}</span>` : ""}</button>`;
   let html = row(`data-cat="" id="nav-review"`, driveKind(d), driveTitle(d).trim(), S.items.length, "drive");
-  for (const c of TILE_CATS) {
+  for (const c of NAV_CATS) {
     const key = c === "other" ? "other*" : c;
     const isOpen = S.navOpen.has(c) && !!exts[c];
     const tw = exts[c] ? `<span class="nav-tw ${isOpen ? "open" : ""}" data-navopen="${c}">${icon("chevron")}</span>` : `<span class="nav-tw"></span>`;
@@ -1272,26 +1320,47 @@ function passesFilters(it) {
   const f = S.filters;
   if (!f.status.has(it.status)) return false;
   if (f.size) {
-    const [lo, hi] = f.size.split("-");
-    if (it.size < Number(lo) || (hi && it.size >= Number(hi))) return false;
+    const { op, a, b } = f.size;
+    if (op === "gt" && !(it.size > a)) return false;
+    if (op === "lt" && !(it.size < a)) return false;
+    if (op === "eq" && Math.abs(it.size - a) > Math.max(1, a * 0.005)) return false;   // "5 MB" means about 5 MB
+    if (op === "between" && !(it.size >= a && it.size <= b)) return false;
   }
   if (f.date) {
-    if (f.date === "none") { if (it.modified) return false; }
-    else {
-      const days = Number(f.date);
-      if (!it.modified) return false;
-      const age = (Date.now() / 1000 - it.modified) / 86400;
-      if (days > 0 ? age > days : age < -days) return false;
-    }
+    if (f.date.none) { if (it.modified) return false; }
+    else if (!it.modified || it.modified < f.date.from || it.modified >= f.date.to) return false;
   }
   return true;
+}
+// "Show hidden system files": the clutter Windows and macOS leave on every stick.
+const SYSTEM_NAMES = new Set(["thumbs.db", "desktop.ini", ".ds_store", "ehthumbs.db", "iconcache.db"]);
+function isSystemFile(it) {
+  const n = (it.name || "").toLowerCase();
+  const f = (it.folder || "").toLowerCase();
+  return SYSTEM_NAMES.has(n) || n.startsWith("._") || n.startsWith("~$")
+    || /(^|\/)(system volume information|\.spotlight-v100|\.fseventsd|\.trashes)(\/|$)/.test(f)
+    || (/(^|\/)\$recycle\.bin(\/|$)/.test(f) && n.startsWith("$i"));
+}
+// "Hide duplicates": a carved copy of a file the file table also has (same size and type), and the same
+// name + size found twice.
+function duplicateIds() {
+  const named = new Set();
+  const seen = new Set();
+  const dup = new Set();
+  for (const it of S.items) if (it.named) named.add(`${it.size}|${it.ext}`);
+  for (const it of S.items) {
+    if (!it.named) { if (named.has(`${it.size}|${it.ext}`)) dup.add(it.id); continue; }
+    const k = `${(it.name || "").toLowerCase()}|${it.size}`;
+    if (seen.has(k)) dup.add(it.id); else seen.add(k);
+  }
+  return dup;
 }
 // Disk Drill's three groups, as top-level rows of one tree.
 const GROUPS = ["named", "existing", "carved"];
 const GROUP_LABEL = { named: "Deleted or lost", existing: "Existing", carved: "Reconstructed" };
 const groupOf = (it) => (!it.named ? "carved" : it.existing ? "existing" : "named");
 const inTab = (it) => S.groups.has(groupOf(it));
-const catMatch = (it) => (!S.cat || (S.cat === "other*" ? !TILE_CATS.slice(0, 5).includes(it.category) : it.category === S.cat))
+const catMatch = (it) => (!S.cat || (S.cat === "other*" ? !NAV_CATS.slice(0, 6).includes(it.category) : it.category === S.cat))
   && (!S.ext || (it.ext || "").toLowerCase() === S.ext);
 
 function refilter() {
@@ -1299,7 +1368,10 @@ function refilter() {
   const q = S.filters.q.trim().toLowerCase();
   const base = [];
   S.groupCounts = { named: 0, existing: 0, carved: 0 };
+  const dups = S.hideDupes ? duplicateIds() : null;
   for (const it of S.items) {
+    if (!S.showSystem && isSystemFile(it)) continue;
+    if (dups && dups.has(it.id)) continue;
     S.groupCounts[groupOf(it)]++;
     if (!inTab(it)) continue;
     if (q && !(`${it.folder}/${it.name}`.toLowerCase().includes(q))) continue;
@@ -1402,18 +1474,23 @@ function isOpen(node) {
   return S.shown.length <= 400 || (node.depth === 1 && node.key.startsWith(GROUP_LABEL.carved));
 }
 
+// "Files" layout (or a search) lists files only; "Folders" shows the tree, as Disk Drill's two buttons do.
+const isFlat = () => S.layout === "files" || !!S.filters.q.trim();
+function sortedKids(node) {
+  const kids = [...node.kids.values()];
+  if (node.depth === -1) return kids.sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group));
+  return kids.sort(S.sort.key === "size" ? (a, b) => S.sort.dir * (a.bytes - b.bytes)
+    : S.sort.key === "modified" ? (a, b) => S.sort.dir * (a.newest - b.newest)
+    : (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+}
 function flatten(all = false) {
   const rows = [];
-  const flat = S.view === "grid" || S.filters.q.trim();
+  const flat = isFlat();
   if (flat) {
     for (const it of S.shown) rows.push({ file: it, depth: 0, flat: true });
   } else {
-    const folderSort = S.sort.key === "size" ? (a, b) => S.sort.dir * (a.bytes - b.bytes)
-      : S.sort.key === "modified" ? (a, b) => S.sort.dir * (a.newest - b.newest)
-      : (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
-    const groupSort = (a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group);
     const walk = (node) => {
-      for (const k of [...node.kids.values()].sort(node.depth === -1 ? groupSort : folderSort)) {
+      for (const k of sortedKids(node)) {
         const open = all || isOpen(k);
         rows.push({ folder: k, depth: k.depth, open });
         if (open) walk(k);
@@ -1463,14 +1540,62 @@ function patchRows(entries) {
 
 function gridGeometry() {
   const w = viewport.clientWidth - 24;
-  const cols = Math.max(1, Math.floor((w + 10) / 170));
-  const tileW = (w - (cols - 1) * 10) / cols;
-  return { cols, tileW, rowH: tileW * 0.75 + 30 + 10 };
+  const cols = Math.max(1, Math.floor((w + 14) / (S.gzoom + 14)));
+  const tileW = (w - (cols - 1) * 14) / cols;
+  return { cols, tileW, rowH: tileW + 50 };
+}
+
+// The grid in "Folders" layout walks the tree like Disk Drill's: the folders and files of one folder,
+// a breadcrumb at the bottom to go back up.
+function gridNode() {
+  let node = S.tree;
+  const ok = [];
+  for (const name of S.gpath) {
+    const k = node && node.kids.get(name);
+    if (!k) break;
+    node = k;
+    ok.push(name);
+  }
+  if (ok.length !== S.gpath.length) S.gpath = ok;
+  return node;
+}
+function gridEntries() {
+  if (isFlat()) return S.shown.map((it) => ({ file: it }));
+  const node = gridNode();
+  if (!node) return [];
+  return [...sortedKids(node).map((k) => ({ folder: k })), ...node.files.map((it) => ({ file: it }))];
+}
+function visibleFiles() {
+  if (S.view === "grid") return (S.gitems || []).filter((e) => e.file).map((e) => e.file);
+  return S.rows.filter((r) => r.file).map((r) => r.file);
+}
+function renderCrumbs() {
+  const el = $("#crumbs");
+  const show = S.view === "grid" && !isFlat();
+  el.hidden = !show;
+  if (!show) return;
+  const d = (S.scan && S.scan.drive) || {};
+  const html = [`<button data-crumb="0">${icon(driveKind(d))}<span>${esc(driveTitle(d).trim())}</span></button>`,
+    ...S.gpath.map((n, i) => `${icon("chevron", "sep")}<button data-crumb="${i + 1}">${BIG_FOLDER}<span>${esc(n)}</span></button>`)].join("");
+  if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+}
+$("#crumbs").onclick = (e) => {
+  const b = e.target.closest("[data-crumb]");
+  if (!b) return;
+  S.gpath = S.gpath.slice(0, Number(b.dataset.crumb));
+  viewport.scrollTop = 0;
+  renderList();
+};
+function enterFolder(node) {
+  S.gpath = node.key.split("/");
+  viewport.scrollTop = 0;
+  renderList();
 }
 
 function renderList() {
   if (S.screen !== "review") return;
   if (S.view === "grid") return renderGrid();
+  renderCrumbs();
   const rows = S.rows;
   spacer.style.height = `${rows.length * ROW}px`;
   const top = viewport.scrollTop;
@@ -1506,7 +1631,7 @@ function renderList() {
         <div class="name-cell" style="${r.flat ? "" : `padding-left:${r.depth * 20 + 24}px`}">${thumbFor(it, "rthumb") || icon(it.category, "fi").replace("<svg", `<svg ${catStyle(it.category)}`)}<span class="nm" title="${esc(it.path || it.name)}">${esc(it.name)}</span>${sub ? `<span class="sub" title="${esc(sub)}">${esc(sub)}</span>` : ""}<button class="icon-btn eye" data-eye="${it.id}" title="Quick Look (Space)">${icon("eye")}</button></div>
         <div>${chance(it.status)}</div>
         <div class="cell-muted">${date(it.modified) || "—"}</div>
-        <div class="cell-muted">${esc((it.ext || "?").toUpperCase())} ${CAT_ONE[it.category].toLowerCase()}</div>
+        <div class="cell-muted" title="${esc(typeName(it))}">${esc(typeName(it))}</div>
         <div class="num">${size(it.size)}</div></div>`;
       }]);
     }
@@ -1515,42 +1640,62 @@ function renderList() {
 }
 
 function gridThumb(it) {
-  if (it.status === "overwritten") return icon(it.category);
-  if (it.category === "image" && it.size < 40e6) {
-    return `<img loading="lazy" decoding="async" src="${thumbUrl(it.id)}" alt="">`;
+  if (it.status !== "overwritten") {
+    if (it.category === "image" && it.size < 40e6) {
+      return `<img loading="lazy" decoding="async" src="${thumbUrl(it.id)}" alt="">`;
+    }
+    if (PLAYABLE_VIDEO.has(it.ext) && it.size < 4e9) {
+      // The first frames only: the browser asks for a small byte range.
+      return `<video muted preload="metadata" src="${dataUrl(it.id)}#t=0.5"></video><span class="tile-badge">${icon("video")}</span>`;
+    }
   }
-  if (PLAYABLE_VIDEO.has(it.ext) && it.size < 4e9) {
-    // The first frames only: the browser asks for a small byte range.
-    return `<video muted preload="metadata" src="${dataUrl(it.id)}#t=0.5"></video><span class="tile-badge">${icon("video")}</span>`;
-  }
-  return icon(it.category);
+  return `<span class="bigicon">${icon(it.category)}</span>`;
 }
 
 function renderGrid() {
-  const items = S.shown;
+  const ents = (S.gitems = gridEntries());
   const { cols, tileW, rowH } = gridGeometry();
-  const rows = Math.ceil(items.length / cols);
+  const rows = Math.ceil(ents.length / cols);
   spacer.style.height = `${rows * rowH + 12}px`;
   const top = viewport.scrollTop;
   const firstRow = Math.max(0, Math.floor(top / rowH) - 2);
   const lastRow = Math.min(rows, Math.ceil((top + viewport.clientHeight) / rowH) + 2);
   const w = Math.round(tileW * 100) / 100;
   const entries = [];
-  for (let i = firstRow * cols; i < Math.min(items.length, lastRow * cols); i++) {
-    const it = items[i];
+  for (let i = firstRow * cols; i < Math.min(ents.length, lastRow * cols); i++) {
+    const e = ents[i];
+    const x = 12 + (i % cols) * (tileW + 14);
+    const y = 12 + Math.floor(i / cols) * rowH;
+    const pos = `left:${x}px;top:${y}px;width:${w}px;`;
+    if (e.folder) {
+      const f = e.folder;
+      const state = f.sel === 0 ? "" : f.sel === f.count ? "checked" : "data-ind";
+      entries.push([`gf${i}|${f.key}|${state}|${f.count}|${w}|${cols}`, () =>
+        `<div class="tile abs folder" data-g="${i}" style="${pos}">
+        <input type="checkbox" class="check" data-gfpick="${i}" ${state === "checked" ? "checked" : ""} ${state === "data-ind" ? "data-ind" : ""}>
+        <div class="thumb">${BIG_FOLDER}</div>
+        <div class="cap" title="${esc(f.name)}">${esc(f.name)} (${nf(f.count)})</div></div>`]);
+      continue;
+    }
+    const it = e.file;
     const sel = S.selected.has(it.id) ? 1 : 0;
     const cur = S.current === it.id ? 1 : 0;
-    const x = 12 + (i % cols) * (tileW + 10);
-    const y = 12 + Math.floor(i / cols) * rowH;
-    entries.push([`g${i}|${it.id}|${sel}|${cur}|${w}|${cols}|${scanGen()}`, () =>
-      `<div class="tile abs ${cur ? "current" : ""}" data-g="${i}" ${catStyle(it.category).replace('style="', `style="left:${x}px;top:${y}px;width:${w}px;`)}>
+    entries.push([`g${i}|${it.id}|${sel}|${cur}|${w}|${cols}|${it.status}|${scanGen()}`, () =>
+      `<div class="tile abs ${cur ? "current" : ""}" data-g="${i}" ${catStyle(it.category).replace('style="', `style="${pos}`)}>
       <input type="checkbox" class="check" data-pick="${it.id}" ${sel ? "checked" : ""}>
+      ${star(it.status)}
       <div class="thumb">${gridThumb(it)}</div>
-      <div class="cap"><span class="sdot ${it.status}" title="${CHANCE[it.status].label} chances"></span><span class="nm" title="${esc(it.name)}">${esc(it.name)}</span></div></div>`]);
+      <div class="cap" title="${esc(it.name)}">${esc(it.name)}</div></div>`]);
   }
   patchRows(entries);
+  renderCrumbs();
 }
-spacer.addEventListener("error", (ev) => { if (ev.target.tagName === "IMG") ev.target.outerHTML = icon("image"); }, true);
+spacer.addEventListener("error", (ev) => {
+  const el = ev.target;
+  if (el.tagName !== "IMG") return;
+  // A list row keeps its small icon; a grid tile gets the big one.
+  el.outerHTML = el.classList.contains("rthumb") ? icon("image", "fi") : `<span class="bigicon">${icon("image")}</span>`;
+}, true);
 
 function filesUnder(node, out = []) {
   out.push(...node.files);
@@ -1565,9 +1710,10 @@ function setOpen(node, open) {
 
 let lastPick = null;
 spacer.addEventListener("click", (ev) => {
-  const fbox = ev.target.closest("[data-fpick]");
+  const gfbox = ev.target.closest("[data-gfpick]");
+  const fbox = gfbox || ev.target.closest("[data-fpick]");
   if (fbox) {
-    const node = S.rows[Number(fbox.dataset.fpick)].folder;
+    const node = gfbox ? S.gitems[Number(gfbox.dataset.gfpick)].folder : S.rows[Number(fbox.dataset.fpick)].folder;
     const on = node.sel !== node.count;
     for (const it of filesUnder(node)) on ? S.selected.add(it.id) : S.selected.delete(it.id);
     afterSelection();
@@ -1577,7 +1723,7 @@ spacer.addEventListener("click", (ev) => {
   if (box) {
     const id = Number(box.dataset.pick);
     const on = box.checked;
-    const list = S.view === "grid" ? S.shown : S.rows.filter((r) => r.file).map((r) => r.file);
+    const list = visibleFiles();
     const idx = list.findIndex((x) => x.id === id);
     if (ev.shiftKey && lastPick !== null && idx >= 0) {
       const [a, b] = [Math.min(lastPick, idx), Math.max(lastPick, idx)];
@@ -1592,7 +1738,12 @@ spacer.addEventListener("click", (ev) => {
   const eye = ev.target.closest("[data-eye]");
   if (eye) { openQuickLook(S.items[Number(eye.dataset.eye)]); return; }
   const tile = ev.target.closest("[data-g]");
-  if (tile) { select(S.shown[Number(tile.dataset.g)]); return; }
+  if (tile) {
+    const e = S.gitems[Number(tile.dataset.g)];
+    if (e && e.folder) enterFolder(e.folder);
+    else if (e) select(e.file);
+    return;
+  }
   const rowEl = ev.target.closest("[data-i]");
   if (!rowEl) return;
   const r = S.rows[Number(rowEl.dataset.i)];
@@ -1603,7 +1754,7 @@ spacer.addEventListener("dblclick", (ev) => {
   if (ev.target.closest("input, button")) return;
   const rowEl = ev.target.closest("[data-i], [data-g]");
   if (!rowEl) return;
-  const it = rowEl.dataset.g != null ? S.shown[Number(rowEl.dataset.g)] : S.rows[Number(rowEl.dataset.i)].file;
+  const it = rowEl.dataset.g != null ? (S.gitems[Number(rowEl.dataset.g)] || {}).file : S.rows[Number(rowEl.dataset.i)].file;
   if (it) openQuickLook(it);
 });
 
@@ -1615,8 +1766,14 @@ function afterSelection() {
 
 document.addEventListener("keydown", (ev) => {
   if (S.screen !== "review" || ev.target.matches("input, textarea, select") || $("dialog[open]")) return;
-  const files = S.view === "grid" ? S.shown : S.rows.filter((r) => r.file).map((r) => r.file);
+  const files = visibleFiles();
   const idx = files.findIndex((x) => x.id === S.current);
+  if (ev.key === "Backspace" && S.view === "grid" && S.gpath.length) {
+    ev.preventDefault();
+    S.gpath = S.gpath.slice(0, -1);
+    renderList();
+    return;
+  }
   if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
     ev.preventDefault();
     const step = S.view === "grid" ? gridGeometry().cols : 1;
@@ -1633,6 +1790,8 @@ document.addEventListener("keydown", (ev) => {
     ev.preventDefault();
     S.selected.has(S.current) ? S.selected.delete(S.current) : S.selected.add(S.current);
     afterSelection();
+  } else if (ev.key === "Escape" && !$("#ctx").hidden) {
+    closeCtx();
   } else if (ev.key === "Escape" && !$("#preview").hidden) {
     showPreview(null);
   } else if ((ev.key === "a" || ev.key === "A") && (ev.ctrlKey || ev.metaKey)) {
@@ -1646,7 +1805,7 @@ function scrollToFile(it) {
   if (S.view === "grid") {
     const g = gridGeometry();
     h = g.rowH;
-    y = Math.floor(S.shown.indexOf(it) / g.cols) * h;
+    y = Math.floor((S.gitems || []).findIndex((e) => e.file === it) / g.cols) * h;
   } else {
     h = ROW;
     y = S.rows.findIndex((r) => r.file === it) * ROW;
@@ -1655,15 +1814,10 @@ function scrollToFile(it) {
   else if (y + h > viewport.scrollTop + viewport.clientHeight) viewport.scrollTop = y + h - viewport.clientHeight;
 }
 
-$("#check-all").onchange = (e) => {
+$("#check-all").onchange = $("#gcheck-all").onchange = (e) => {
   for (const it of S.shown) e.target.checked ? S.selected.add(it.id) : S.selected.delete(it.id);
   afterSelection();
 };
-$("#select-high").onclick = () => {
-  for (const it of S.shown) if (it.status === "good") S.selected.add(it.id);
-  afterSelection();
-};
-$("#select-none").onclick = () => { S.selected.clear(); afterSelection(); };
 
 function selectedItems() {
   return [...S.selected].map((id) => S.items[id]).filter(Boolean);
@@ -1674,18 +1828,19 @@ function renderSelection() {
   const bytes = items.reduce((a, it) => a + it.size, 0);
   $("#sel-info").innerHTML = items.length
     ? `<b>${plural(items.length, "file")}</b> selected · ${size(bytes)}`
-    : `Tick the files and folders you want back <span class="hint"><kbd>Space</kbd> Quick Look</span>`;
+    : `Tick the files and folders you want back <span class="hint">Right-click for more · <kbd>Space</kbd> Quick Look</span>`;
   const btn = $("#recover-btn");
   const all = S.shown || [];
   btn.disabled = !items.length && !all.length;
   btn.textContent = items.length ? "Recover" : "Recover all…";
+  btn.title = items.length ? `Recover the ${plural(items.length, "marked file")}` : "Nothing is marked: recover everything shown";
   $("#sel-sum").textContent = items.length ? `${plural(items.length, "item")} on ${size(bytes)}`
     : all.length ? `${plural(all.length, "item")} on ${size(all.reduce((a, it) => a + it.size, 0))}` : "";
   const shownSel = S.shown.length ? S.shown.filter((it) => S.selected.has(it.id)).length : 0;
-  const box = $("#check-all");
-  box.checked = !!S.shown.length && shownSel === S.shown.length;
-  box.indeterminate = shownSel > 0 && shownSel < S.shown.length;
-  $("#select-none").hidden = !items.length;
+  for (const box of [$("#check-all"), $("#gcheck-all")]) {
+    box.checked = !!S.shown.length && shownSel === S.shown.length;
+    box.indeterminate = shownSel > 0 && shownSel < S.shown.length;
+  }
 }
 
 function renderEmpty() {
@@ -1736,26 +1891,167 @@ $$("#thead [data-sort]").forEach((el) => {
   el.onclick = () => {
     const k = el.dataset.sort;
     S.sort = { key: k, dir: S.sort.key === k ? -S.sort.dir : (k === "size" || k === "modified" ? -1 : 1) };
+    applyView();
     refilter();
   };
 });
+function applyView() {
+  $$("#view-seg button").forEach((x) => x.classList.toggle("active", x.dataset.view === S.view));
+  $$("#layout-seg button").forEach((x) => x.classList.toggle("active", x.dataset.layout === S.layout));
+  $("#thead").hidden = S.view === "grid";
+  $("#ghead").hidden = S.view !== "grid";
+  $("#gzoom").value = S.gzoom;
+  const labels = { name: "Name", status: "Recovery chances", modified: "Date modified", type: "Type", size: "Size" };
+  $("#gsort-label").textContent = labels[S.sort.key];
+  $("#gsort-dir").textContent = S.sort.dir > 0 ? " ↑" : " ↓";
+}
+const saveView = () => { try { localStorage.setItem("tizo-view", JSON.stringify({ view: S.view, layout: S.layout, gzoom: S.gzoom })); } catch {} };
+try { Object.assign(S, JSON.parse(localStorage.getItem("tizo-view") || "{}")); } catch {}
 $$("#view-seg button").forEach((b) => {
   b.onclick = () => {
     S.view = b.dataset.view;
-    $$("#view-seg button").forEach((x) => x.classList.toggle("active", x === b));
-    $("#thead").style.visibility = S.view === "grid" ? "hidden" : "";
+    applyView(); saveView();
     viewport.scrollTop = 0;
     flatten();
     renderList();
   };
 });
+$$("#layout-seg button").forEach((b) => {
+  b.onclick = () => {
+    S.layout = b.dataset.layout;
+    S.gpath = [];
+    applyView(); saveView();
+    viewport.scrollTop = 0;
+    flatten();
+    renderList();
+  };
+});
+$("#gzoom").oninput = (e) => { S.gzoom = Number(e.target.value); saveView(); renderList(); };
+$("#gsort-btn").onclick = () => { S.sort = { key: S.sort.key, dir: -S.sort.dir }; applyView(); refilter(); };
+$("#gsort-more").onclick = (e) => {
+  e.stopPropagation();
+  const pop = $("#pop-gsort");
+  const keys = [["name", "Name"], ["modified", "Date modified"], ["size", "Size"], ["type", "Type"], ["status", "Recovery chances"]];
+  pop.innerHTML = keys.map(([k, l]) => `<button class="pop-item ${S.sort.key === k ? "sel" : ""}" data-gs="${k}">${l}</button>`).join("");
+  pop.hidden = !pop.hidden;
+  $$("[data-gs]", pop).forEach((b) => {
+    b.onclick = () => { const k = b.dataset.gs; S.sort = { key: k, dir: k === "size" || k === "modified" ? -1 : 1 }; pop.hidden = true; applyView(); refilter(); };
+  });
+};
+applyView();
+
+const DAY = 86400;
+const startOfDay = (t) => { const d = new Date(t * 1000); d.setHours(0, 0, 0, 0); return d.getTime() / 1000; };
+const dayFmt = new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", year: "numeric" });
+const dshort = (t) => dayFmt.format(new Date(t * 1000));
+function datePresets() {
+  const now = Date.now() / 1000;
+  const today = startOfDay(now);
+  const d = new Date(today * 1000);
+  const weekStart = today - ((d.getDay() + 6) % 7) * DAY;
+  const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime() / 1000;
+  const yearStart = new Date(d.getFullYear(), 0, 1).getTime() / 1000;
+  return [
+    { id: "today", label: "Today", from: today, to: today + DAY, sub: dshort(today) },
+    { id: "yesterday", label: "Yesterday", from: today - DAY, to: today, sub: dshort(today - DAY) },
+    { id: "week", label: "This week", from: weekStart, to: today + DAY, sub: `${dshort(weekStart)} - ${dshort(today)}` },
+    { id: "month", label: "This month", from: monthStart, to: today + DAY, sub: `${dshort(monthStart)} - ${dshort(today)}` },
+    { id: "year", label: "This year", from: yearStart, to: today + DAY, sub: String(d.getFullYear()) },
+  ];
+}
+const UNITS = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 };
+function sizeLabel(f) {
+  const u = (n) => `${+(n / UNITS[f.unit]).toFixed(2)} ${f.unit}`;
+  return f.op === "gt" ? `Larger than ${u(f.a)}` : f.op === "lt" ? `Less than ${u(f.a)}` : f.op === "eq" ? `Exactly ${u(f.a)}` : `${u(f.a)} – ${u(f.b)}`;
+}
+function closePops() { Object.values(CHIP_POPS).forEach((p) => { $(p).hidden = true; }); }
+
+function renderShowPop() {
+  const c = S.groupCounts || {};
+  const total = (c.named || 0) + (c.existing || 0) + (c.carved || 0);
+  const only = S.groups.size === 1 ? [...S.groups][0] : S.groups.size === GROUPS.length ? "" : null;
+  const radio = (val, label, n) => `<label class="pop-radio"><input type="radio" name="show" value="${val}" ${only === val ? "checked" : ""}><span>${label}</span><span class="cnt">${nf(n)}</span></label>`;
+  $("#pop-show").innerHTML = `<div class="pop-list">
+    ${radio("", "All files", total)}${radio("named", "Deleted or lost", c.named || 0)}
+    ${c.existing ? radio("existing", "Existing", c.existing) : ""}${radio("carved", "Reconstructed", c.carved || 0)}</div>
+    <hr><label class="opt"><input type="checkbox" class="check" id="f-system" ${S.showSystem ? "checked" : ""}><span>Show hidden system files</span></label>
+    <label class="opt"><input type="checkbox" class="check" id="f-dupes" ${S.hideDupes ? "checked" : ""}><span>Hide duplicates</span></label>`;
+  $$("#pop-show [name=show]").forEach((el) => {
+    el.onchange = () => { S.groups = new Set(el.value ? [el.value] : GROUPS); viewport.scrollTop = 0; refilter(); renderShowPop(); };
+  });
+  $("#f-system").onchange = (e) => { S.showSystem = e.target.checked; refilter(); renderShowPop(); };
+  $("#f-dupes").onchange = (e) => { S.hideDupes = e.target.checked; refilter(); renderShowPop(); };
+}
+
+function renderSizePop() {
+  const f = S.filters.size || { op: "gt", a: 0, b: 0, unit: "MB" };
+  const num = (v) => (v ? +(v / UNITS[f.unit]).toFixed(2) : "");
+  const row = (op, label) => `<label class="pop-radio"><input type="radio" name="sz" value="${op}" ${f.op === op ? "checked" : ""}><span>${label}</span></label>
+    <div class="sz-in" data-for="${op}" ${f.op === op ? "" : "hidden"}><input type="number" min="0" step="any" class="sz-a" value="${num(f.a)}">${op === "between"
+      ? `<span>–</span><input type="number" min="0" step="any" class="sz-b" value="${num(f.b)}">` : ""}
+      <select class="sz-unit">${Object.keys(UNITS).map((u) => `<option ${u === f.unit ? "selected" : ""}>${u}</option>`).join("")}</select></div>`;
+  $("#pop-size").innerHTML = `<div class="pop-list">${row("gt", "Larger than")}${row("lt", "Less than")}${row("eq", "Exactly")}${row("between", "Interval")}</div>
+    <div class="pop-btns"><button class="btn" id="sz-cancel">Cancel</button><button class="btn primary" id="sz-ok">OK</button></div>`;
+  const pop = $("#pop-size");
+  $$("[name=sz]", pop).forEach((el) => {
+    el.onchange = () => { $$(".sz-in", pop).forEach((x) => { x.hidden = x.dataset.for !== el.value; }); $(`.sz-in[data-for="${el.value}"] .sz-a`, pop).focus(); };
+  });
+  $("#sz-cancel").onclick = closePops;
+  $("#sz-ok").onclick = () => {
+    const op = $("[name=sz]:checked", pop).value;
+    const box = $(`.sz-in[data-for="${op}"]`, pop);
+    const unit = $(".sz-unit", box).value;
+    const a = Number($(".sz-a", box).value || 0) * UNITS[unit];
+    const b = op === "between" ? Number($(".sz-b", box).value || 0) * UNITS[unit] : 0;
+    S.filters.size = (op === "between" ? b > 0 : a > 0 || op === "eq") ? { op, a: Math.min(a, b || a), b: Math.max(a, b), unit } : null;
+    closePops();
+    refilter();
+  };
+}
+
+function renderDatePop() {
+  const cur = S.filters.date;
+  const custom = cur && cur.custom;
+  const iso = (t) => (t ? new Date(t * 1000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) : "");
+  $("#pop-date").innerHTML = `<select id="dt-mode"><option value="presets" ${custom ? "" : "selected"}>Presets</option><option value="custom" ${custom ? "selected" : ""}>Custom range</option></select>
+    <div id="dt-presets" ${custom ? "hidden" : ""}>${datePresets().map((p) => `<button class="dt-item ${cur && cur.id === p.id ? "sel" : ""}" data-dt="${p.id}">${icon("calendar")}<span><b>${p.label}</b><small>${esc(p.sub)}</small></span></button>`).join("")}
+      <button class="dt-item ${cur && cur.none ? "sel" : ""}" data-dt="none">${icon("calendar")}<span><b>Unknown date</b><small>Files with no date</small></span></button></div>
+    <div id="dt-custom" ${custom ? "" : "hidden"}><label>From <input type="date" id="dt-from" value="${custom ? iso(cur.from) : ""}"></label>
+      <label>To <input type="date" id="dt-to" value="${custom ? iso(cur.to - DAY) : ""}"></label>
+      <div class="pop-btns"><button class="btn" id="dt-cancel">Cancel</button><button class="btn primary" id="dt-ok">OK</button></div></div>`;
+  $("#dt-mode").onchange = (e) => { $("#dt-presets").hidden = e.target.value !== "presets"; $("#dt-custom").hidden = e.target.value !== "custom"; };
+  $$("[data-dt]", $("#pop-date")).forEach((b) => {
+    b.onclick = () => {
+      const id = b.dataset.dt;
+      S.filters.date = id === "none" ? { id, none: true, label: "Unknown date" } : (() => { const p = datePresets().find((x) => x.id === id); return { id, from: p.from, to: p.to, label: p.label }; })();
+      closePops();
+      refilter();
+    };
+  });
+  $("#dt-cancel").onclick = closePops;
+  $("#dt-ok").onclick = () => {
+    const from = $("#dt-from").value, to = $("#dt-to").value;
+    if (!from && !to) { S.filters.date = null; closePops(); refilter(); return; }
+    const f = from ? new Date(`${from}T00:00`).getTime() / 1000 : 0;
+    const t = to ? new Date(`${to}T00:00`).getTime() / 1000 + DAY : 4e9;
+    S.filters.date = { custom: true, from: f, to: t, label: `${from ? dshort(f) : "…"} – ${to ? dshort(t - DAY) : "…"}` };
+    closePops();
+    refilter();
+  };
+}
 
 function renderChanceFilters() {
-  $("#f-chances").innerHTML = ["good", "partial", "overwritten"].map((k) =>
-    `<label class="opt"><input type="checkbox" class="check" data-st="${k}" ${S.filters.status.has(k) ? "checked" : ""}>${chance(k)}</label>`).join("");
-  $$("#f-chances [data-st]").forEach((el) => {
-    el.onchange = () => { el.checked ? S.filters.status.add(el.dataset.st) : S.filters.status.delete(el.dataset.st); refilter(); };
-  });
+  $("#pop-chances").innerHTML = `<div class="pop-list">${["good", "partial", "overwritten"].map((k) =>
+    `<label class="opt ch-opt"><input type="checkbox" class="check" data-st="${k}" ${S.filters.status.has(k) ? "checked" : ""}>${icon(STAR[k])}<span>${CHANCE[k].label}</span></label>`).join("")}</div>
+    <div class="pop-btns"><button class="btn" id="st-cancel">Cancel</button><button class="btn primary" id="st-ok">OK</button></div>`;
+  $("#st-cancel").onclick = closePops;
+  $("#st-ok").onclick = () => {
+    const on = $$("#pop-chances [data-st]").filter((el) => el.checked).map((el) => el.dataset.st);
+    // Nothing ticked means no filter, as in Disk Drill.
+    S.filters.status = new Set(on.length ? on : ["good", "partial", "overwritten"]);
+    closePops();
+    refilter();
+  };
 }
 function renderFilterBadge() {
   const f = S.filters;
@@ -1763,33 +2059,26 @@ function renderFilterBadge() {
     const c = $(id);
     c.classList.toggle("on", !!active);
     $(".fl", c).textContent = active ? label : base;
+    const x = $(".x", c);
+    if (active && !x && id !== "#chip-show") c.insertAdjacentHTML("beforeend", `<span class="x" title="Remove this filter">${icon("x")}</span>`);
+    else if (!active && x) x.remove();
   };
   const cat = S.cat === "other*" ? "other" : S.cat;
   setChip("#chip-type", cat || S.ext, S.ext ? S.ext.toUpperCase() : cat ? (cat === "video" ? "Videos" : CAT_LABEL[cat]) : "", "File type");
-  const chipX = $("#chip-type .x");
-  if (cat || S.ext) { if (!chipX) $("#chip-type").insertAdjacentHTML("beforeend", `<span class="x" title="Show all file types">${icon("x")}</span>`); }
-  else if (chipX) chipX.remove();
-  setChip("#chip-size", f.size, $("#f-size").selectedOptions[0]?.textContent || "", "File size");
-  setChip("#chip-date", f.date, $("#f-date").selectedOptions[0]?.textContent || "", "Date modified");
+  setChip("#chip-size", f.size, f.size ? sizeLabel(f.size) : "", "File size");
+  setChip("#chip-date", f.date, f.date ? f.date.label : "", "Date modified");
   const names = ["good", "partial", "overwritten"].filter((k) => f.status.has(k)).map((k) => CHANCE[k].label);
-  setChip("#chip-chances", f.status.size < 3, names.join(", ") || "None", "Recovery chances");
-  const hiddenGroups = GROUPS.filter((g) => !S.groups.has(g) && (S.groupCounts || {})[g]);
-  setChip("#chip-show", hiddenGroups.length, `Show: ${GROUPS.filter((g) => S.groups.has(g)).map((g) => GROUP_LABEL[g]).join(", ") || "nothing"}`, "Show");
-  $("#f-reset").hidden = !(cat || S.ext || f.size || f.date || f.status.size < 3 || hiddenGroups.length || f.q);
-}
-function renderShowPop() {
-  $("#pop-show").innerHTML = `<div class="pop-sec"><h4>Show</h4>${GROUPS.map((g) =>
-    `<label class="opt"><input type="checkbox" class="check" data-group="${g}" ${S.groups.has(g) ? "checked" : ""}><span>${GROUP_LABEL[g]} <small>(${nf((S.groupCounts || {})[g] || 0)})</small></span></label>`).join("")}</div>`;
-  $$("#pop-show [data-group]").forEach((el) => {
-    el.onchange = () => { el.checked ? S.groups.add(el.dataset.group) : S.groups.delete(el.dataset.group); refilter(); };
-  });
+  setChip("#chip-chances", f.status.size < 3, names.join(", "), "Recovery chances");
+  const onlyGroup = S.groups.size === 1 ? GROUP_LABEL[[...S.groups][0]] : null;
+  setChip("#chip-show", onlyGroup || !S.showSystem || S.hideDupes, onlyGroup || "Show", "Show");
+  $("#f-reset").hidden = !(cat || S.ext || f.size || f.date || f.status.size < 3 || S.groups.size < GROUPS.length || !S.showSystem || S.hideDupes || f.q);
 }
 function renderTypePop() {
   const counts = {};
-  for (const it of S.items) if (inTab(it)) counts[tileCat(it.category)] = (counts[tileCat(it.category)] || 0) + 1;
+  for (const it of S.items) if (inTab(it)) counts[navCat(it.category)] = (counts[navCat(it.category)] || 0) + 1;
   $("#pop-type").innerHTML = `<div class="pop-sec"><h4>File type</h4>
     <button class="pop-item ${!S.cat ? "sel" : ""}" data-pcat="">All files</button>
-    ${TILE_CATS.map((c) => `<button class="pop-item ${(S.cat === c || (c === "other" && S.cat === "other*")) ? "sel" : ""}" data-pcat="${c === "other" ? "other*" : c}" ${counts[c] ? "" : "disabled"}>${icon(c)}${c === "video" ? "Videos" : CAT_LABEL[c]}<small>${nf(counts[c] || 0)}</small></button>`).join("")}</div>`;
+    ${NAV_CATS.map((c) => `<button class="pop-item ${(S.cat === c || (c === "other" && S.cat === "other*")) ? "sel" : ""}" data-pcat="${c === "other" ? "other*" : c}" ${counts[c] ? "" : "disabled"}>${icon(c)}${c === "video" ? "Videos" : CAT_LABEL[c]}<small>${nf(counts[c] || 0)}</small></button>`).join("")}</div>`;
   $$("#pop-type [data-pcat]").forEach((b) => {
     b.onclick = () => { S.cat = b.dataset.pcat || null; S.ext = null; $("#pop-type").hidden = true; viewport.scrollTop = 0; refilter(); renderNav(); };
   });
@@ -1798,36 +2087,106 @@ const CHIP_POPS = { "#chip-show": "#pop-show", "#chip-type": "#pop-type", "#chip
 for (const [chip, pop] of Object.entries(CHIP_POPS)) {
   $(chip).onclick = (e) => {
     e.stopPropagation();
-    if (chip === "#chip-type" && e.target.closest(".x")) {
-      S.cat = null; S.ext = null; viewport.scrollTop = 0; refilter(); renderNav();
+    if (e.target.closest(".x")) {
+      if (chip === "#chip-type") { S.cat = null; S.ext = null; viewport.scrollTop = 0; renderNav(); }
+      if (chip === "#chip-size") S.filters.size = null;
+      if (chip === "#chip-date") S.filters.date = null;
+      if (chip === "#chip-chances") S.filters.status = new Set(["good", "partial", "overwritten"]);
+      closePops();
+      refilter();
       return;
     }
     const open = $(pop).hidden;
-    Object.values(CHIP_POPS).forEach((p) => { $(p).hidden = true; });
+    closePops();
     if (pop === "#pop-show") renderShowPop();
     if (pop === "#pop-type") renderTypePop();
+    if (pop === "#pop-size") renderSizePop();
+    if (pop === "#pop-date") renderDatePop();
     if (pop === "#pop-chances") renderChanceFilters();
     $(pop).hidden = !open;
   };
 }
 function resetFilters() {
   S.filters.status = new Set(["good", "partial", "overwritten"]);
-  S.filters.size = "";
-  S.filters.date = "";
+  S.filters.size = null;
+  S.filters.date = null;
   S.filters.q = "";
   S.cat = null;
   S.ext = null;
   S.groups = new Set(GROUPS);
+  S.showSystem = true;
+  S.hideDupes = false;
   $("#q").value = "";
-  $("#f-size").value = "";
-  $("#f-date").value = "";
-  renderChanceFilters();
+  closePops();
   refilter();
   renderNav();
 }
-$("#f-size").onchange = (e) => { S.filters.size = e.target.value; refilter(); };
-$("#f-date").onchange = (e) => { S.filters.date = e.target.value; refilter(); };
 $("#f-reset").onclick = resetFilters;
+
+/* ---------- right-click menu (Disk Drill's, plus "Mark all with high chances") ---------- */
+const ctx = $("#ctx");
+function closeCtx() { ctx.hidden = true; }
+function openCtx(x, y, items) {
+  ctx.innerHTML = items.map((m) => (m === "-" ? "<hr>"
+    : `<button data-ctx="${m.id}" ${m.disabled ? "disabled" : ""}>${m.icon ? icon(m.icon) : '<span class="ci"></span>'}<span>${esc(m.label)}</span></button>`)).join("");
+  ctx.hidden = false;
+  const r = ctx.getBoundingClientRect();
+  ctx.style.left = `${Math.max(4, Math.min(x, innerWidth - r.width - 8))}px`;
+  ctx.style.top = `${Math.max(4, Math.min(y, innerHeight - r.height - 8))}px`;
+  const acts = Object.fromEntries(items.filter((m) => m !== "-").map((m) => [m.id, m.run]));
+  ctx.onclick = (e) => {
+    const b = e.target.closest("[data-ctx]");
+    if (!b || b.disabled) return;
+    closeCtx();
+    acts[b.dataset.ctx]();
+  };
+}
+document.addEventListener("click", (e) => { if (!e.target.closest("#ctx")) closeCtx(); });
+window.addEventListener("blur", closeCtx);
+viewport.addEventListener("scroll", closeCtx, { passive: true });
+function markAll(list, on = true) {
+  for (const it of list) on ? S.selected.add(it.id) : S.selected.delete(it.id);
+  afterSelection();
+}
+function commonItems() {
+  return [
+    { id: "all", label: "Mark all items for recovery", run: () => markAll(S.shown) },
+    { id: "high", label: "Mark all with high chances", run: () => markAll(S.shown.filter((x) => x.status === "good")) },
+    { id: "notyet", label: "Check only files that were not recovered yet", disabled: !S.recovered.size,
+      run: () => { S.selected.clear(); markAll(S.shown.filter((x) => !S.recovered.has(x.id))); } },
+    { id: "clear", label: "Clear selection", disabled: !S.selected.size, run: () => { S.selected.clear(); afterSelection(); } },
+  ];
+}
+spacer.addEventListener("contextmenu", (ev) => {
+  const tile = ev.target.closest("[data-g]");
+  const rowEl = ev.target.closest("[data-i]");
+  const ent = tile ? S.gitems[Number(tile.dataset.g)] : rowEl ? S.rows[Number(rowEl.dataset.i)] : null;
+  if (!ent) return;
+  ev.preventDefault();
+  if (ent.folder) {
+    const files = filesUnder(ent.folder);
+    const all = files.every((x) => S.selected.has(x.id));
+    openCtx(ev.clientX, ev.clientY, [
+      { id: "mark", label: all ? "Unmark this folder" : "Mark this folder for recovery", run: () => markAll(files, !all) },
+      ...commonItems(), "-",
+      { id: "rec", label: `Recover this folder (${plural(files.length, "file")})`, icon: "download", run: () => openRecover(files) },
+      ...(S.view === "grid" ? [{ id: "open", label: "Open", icon: "folder", run: () => enterFolder(ent.folder) }] : []),
+    ]);
+    return;
+  }
+  const it = ent.file;
+  select(it);
+  const marked = S.selected.has(it.id);
+  const many = marked && S.selected.size > 1;
+  openCtx(ev.clientX, ev.clientY, [
+    { id: "mark", label: marked ? "Unmark" : "Mark for recovery", run: () => markAll([it], !marked) },
+    ...commonItems(), "-",
+    { id: "rec", label: many ? `Recover the ${plural(S.selected.size, "marked file")}` : "Recover", icon: "download",
+      run: () => openRecover(many ? selectedItems() : [it]) },
+    { id: "pv", label: "Preview", icon: "eye", run: () => openQuickLook(it) },
+    { id: "hex", label: "Hex view", icon: "hex", run: () => { S.pvHidden = false; $("#pv-toggle").classList.add("on"); $("#preview").hidden = false; S.pvTab = "hex"; renderPvTab(); } },
+  ]);
+});
 
 /* ---------- preview ---------- */
 let previewToken = 0;
@@ -1837,16 +2196,26 @@ function select(it) {
   renderList();
   showPreview(it);
 }
+// Where Disk Drill would show it: \Deleted or lost\folder\name, \Reconstructed\Pictures\jpg\name.
+const pvPath = (it) => `\\${[...folderPath(it), it.name].join("\\")}`;
 function showPreview(it) {
   $("#preview").hidden = S.pvHidden;
   $("#preview").classList.toggle("empty", !it);
   if (!it) { S.current = null; renderList(); return; }
   $("#pv-name").textContent = it.name;
-  $("#pv-path").textContent = it.named ? `/${it.path}` : "Reconstructed from content (original name unknown)";
-  $("#pv-meta").innerHTML = `${size(it.size)} · ${chance(it.status)}`;
+  $("#pv-name").title = it.name;
+  $("#pv-kind").textContent = `${typeName(it)} - ${size(it.size)}`;
+  $("#pv-date").textContent = `Date modified ${it.modified ? date(it.modified) : "Unknown"}`;
+  $("#pv-path").textContent = pvPath(it);
+  $("#pv-chance").innerHTML = chance(it.status);
+  $("#pv-details").open = false;
+  $("#pv-details-body").innerHTML = "";
+  S.pvTab = "preview";
   renderPvTab();
 }
-$("#pv-close").onclick = () => showPreview(null);
+$("#pv-open").onclick = () => { const it = S.items[S.current]; if (it) openQuickLook(it); };
+$("#pv-back").onclick = () => { S.pvTab = "preview"; renderPvTab(); };
+$("#pv-details").addEventListener("toggle", () => { if ($("#pv-details").open) renderDetails(); });
 $("#pv-toggle").onclick = () => {
   S.pvHidden = !S.pvHidden;
   $("#preview").hidden = S.pvHidden;
@@ -1859,13 +2228,7 @@ $("#pv-wide").onclick = () => {
   $("#pv-wide").innerHTML = icon(p.classList.contains("wide") ? "shrink" : "expand");
   setTimeout(renderList, 50);
 };
-$$("#pv-tabs button").forEach((b) => {
-  b.onclick = () => {
-    S.pvTab = b.dataset.tab;
-    $$("#pv-tabs button").forEach((x) => x.classList.toggle("active", x === b));
-    renderPvTab();
-  };
-});
+
 
 const TEXTY = new Set(["txt", "md", "csv", "log", "ini", "cfg", "json", "xml", "html", "htm", "yaml", "yml", "py", "js", "ts", "c", "h", "cpp", "cs", "java", "go", "rs", "php", "rb", "sh", "ps1", "bat", "css", "sql", "lua", "srt", "vtt", "toml", "rtf", "docx", "pptx", "xlsx", "odt", "ods", "odp"]);
 const PLAYABLE_VIDEO = new Set(["mp4", "m4v", "mov", "webm", "3gp"]);
@@ -1877,27 +2240,32 @@ async function renderPvTab() {
   if (!it) return;
   const body = $("#pv-body");
   const my = ++previewToken;
+  $("#pv-back").hidden = S.pvTab !== "hex";
+  $("#preview").classList.toggle("hexmode", S.pvTab === "hex");
   body.innerHTML = '<div class="pv-note"><span class="spinner"></span></div>';
-  if (S.pvTab === "info") {
-    const d = await api(`/api/item/${it.id}`).catch((e) => ({ error: e.message }));
-    if (my !== previewToken) return;
-    if (d.error) { body.innerHTML = `<div class="pv-note">${esc(d.error)}</div>`; return; }
-    const method = { ntfs: "NTFS file table", fat: "FAT directory", exfat: "exFAT directory", carve: "Recognised by its content", ext4: "ext4 inode" }[d.method] || d.method;
-    body.innerHTML = `<dl class="pv-info">
-      <dt>Chances</dt><dd>${chance(d.status)}</dd>
-      <dt>Why</dt><dd>${d.notes.length ? `<ul>${d.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "No problems found"}</dd>
-      <dt>Size</dt><dd>${size(d.size)} (${nf(d.size)} bytes)</dd>
-      <dt>Modified</dt><dd>${date(d.modified) || "unknown"}</dd>
-      <dt>Found by</dt><dd>${esc(method)}</dd>
-      <dt>Pieces</dt><dd>${d.fragments === 1 ? "1 (in one piece)" : `${d.fragments} (fragmented)`}</dd>
-      ${d.folder_deleted ? "<dt>Folder</dt><dd>Its folder was deleted too</dd>" : ""}
-      <dt>Location</dt><dd>${d.offset >= 0 ? `byte ${nf(d.offset)} on the drive` : "inside the file table record"}</dd>
-      <dt>Evidence</dt><dd><ul>${d.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></dd>
-    </dl>`;
-    return;
-  }
   if (S.pvTab === "hex") return renderHex(it, 0, my);
   return renderMedia(body, it, () => my === previewToken);
+}
+
+// Our extra over Disk Drill: why a file got its chances, and where it was found.
+async function renderDetails() {
+  const it = S.items[S.current];
+  const box = $("#pv-details-body");
+  if (!it) return;
+  box.innerHTML = '<span class="spinner sm"></span>';
+  const d = await api(`/api/item/${it.id}`).catch((e) => ({ error: e.message }));
+  if (S.current !== it.id) return;
+  if (d.error) { box.textContent = d.error; return; }
+  const method = { ntfs: "NTFS file table", fat: "FAT directory", exfat: "exFAT directory", carve: "Recognised by its content", ext4: "ext4 inode" }[d.method] || d.method;
+  box.innerHTML = `<dl class="pv-dl">
+    <dt>Why</dt><dd>${d.notes.length ? `<ul>${d.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "No problems found"}</dd>
+    <dt>Size</dt><dd>${nf(d.size)} bytes</dd>
+    <dt>Found by</dt><dd>${esc(method)}</dd>
+    <dt>Pieces</dt><dd>${d.fragments === 1 ? "1 (in one piece)" : `${d.fragments} (fragmented)`}</dd>
+    ${d.folder_deleted ? "<dt>Folder</dt><dd>Its folder was deleted too</dd>" : ""}
+    <dt>Location</dt><dd>${d.offset >= 0 ? `byte ${nf(d.offset)} on the drive` : "inside the file table record"}</dd>
+    <dt>Evidence</dt><dd><ul>${d.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></dd>
+  </dl>`;
 }
 
 // Formats the window cannot draw itself, but which usually carry a JPEG inside.
@@ -1909,7 +2277,7 @@ async function renderMedia(body, it, alive, opts = {}) {
   const ext = it.ext;
   const note = (ic, text) => { if (alive()) body.innerHTML = `<div class="pv-note">${icon(ic)}${text}</div>`; };
   if (it.status === "overwritten") {
-    note("alert", "This file's space has been reused or wiped, so a preview would only show other data. The Hex tab shows what is there now.");
+    note("alert", "This file's space has been reused or wiped, so a preview would only show other data. Right-click › Hex view shows what is there now.");
     return;
   }
   const embedded = () => {
@@ -1955,7 +2323,7 @@ async function renderMedia(body, it, alive, opts = {}) {
     return;
   }
   if (EMBEDDED_PREVIEW.has(ext) || it.category === "image" || it.category === "video") { embedded(); return; }
-  note(it.category, `No preview for .${esc(ext || "?")} files. The Hex tab shows the raw bytes.`);
+  note(it.category, `No preview for .${esc(ext || "?")} files. Right-click › Hex view shows the raw bytes.`);
 }
 
 async function renderHex(it, offset, my) {
@@ -1971,7 +2339,7 @@ async function renderHex(it, offset, my) {
   else { $("#hex-more")?.parentElement.remove(); body.insertAdjacentHTML("beforeend", html); }
   $("#hex-more")?.addEventListener("click", () => renderHex(it, offset + 4096, my));
 }
-$("#pv-save").onclick = () => { const it = S.items[S.current]; if (it) openRecover([it]); };
+
 
 /* ---------- Quick Look ---------- */
 const ql = $("#ql");
@@ -1982,7 +2350,7 @@ let qlToken = 0;
 function openQuickLook(it, list = null) {
   if (!it) return;
   qlList = list ? list.slice()
-    : S.view === "grid" || S.filters.q.trim() ? S.shown.slice() : flatten(true).filter((r) => r.file).map((r) => r.file);
+    : S.view === "grid" ? visibleFiles() : isFlat() ? S.shown.slice() : flatten(true).filter((r) => r.file).map((r) => r.file);
   qlIdx = Math.max(0, qlList.findIndex((x) => x.id === it.id));
   if (!ql.open) ql.showModal();
   // Keys belong to the viewer, not to whichever of its buttons got focus
@@ -2137,6 +2505,8 @@ async function pollRecover() {
   if (r.state === "running") { recoverPoll = setTimeout(pollRecover, 400); return; }
   const failed = r.failed || [];
   const ok = r.done_files - failed.length;
+  const bad = new Set(failed.map((f) => f.name));
+  if (r.state === "done") for (const it of recoverItems) if (!bad.has(it.name)) S.recovered.add(it.id);
   setRecoverView("done");
   const clean = r.state === "done" && !failed.length;
   $("#rd-done-ico").className = `done-ico ${clean ? "" : "warn"}`;

@@ -570,7 +570,8 @@ def _resolve_path(index: int, dirs: dict[int, tuple[int, str, bool]]) -> tuple[s
         seen.add(index)
         node = dirs.get(index)
         if node is None:
-            parts.append(f"$Orphan_{index}")
+            # The folder's own record is gone: like Disk Drill, a nameless "Lost<n>" folder under "Orphans".
+            parts += [f"Lost{index}", "Orphans"]
             deleted = True
             break
         parent, name, in_use = node

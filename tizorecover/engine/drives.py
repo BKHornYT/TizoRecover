@@ -16,13 +16,15 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 _PS = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $disks = @(Get-Disk | ForEach-Object { [pscustomobject]@{
   n = $_.Number; name = $_.FriendlyName; bus = "$($_.BusType)"; size = $_.Size;
-  boot = $_.IsBoot; system = $_.IsSystem; style = "$($_.PartitionStyle)" } })
+  boot = $_.IsBoot; system = $_.IsSystem; style = "$($_.PartitionStyle)";
+  model = "$($_.Model)".Trim(); serial = "$($_.SerialNumber)".Trim(); vendor = "$($_.Manufacturer)".Trim();
+  fw = "$($_.FirmwareVersion)".Trim(); parts = $_.NumberOfPartitions } })
 $phys = @(Get-PhysicalDisk | ForEach-Object { [pscustomobject]@{ id = "$($_.DeviceId)"; media = "$($_.MediaType)" } })
 $parts = @(Get-Partition | ForEach-Object {
   $v = $null; $v = $_ | Get-Volume
@@ -65,6 +67,7 @@ class Drive:
     parent: str = ""          # the disk number or image id a lost partition was found on
     boot_patch: int = -1      # surviving boot copy to read in place of the first sectors
     patch_len: int = 512
+    disk_info: dict = field(default_factory=dict)   # model, serial, vendor, firmware, style, partitions
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -90,6 +93,13 @@ def _volume_device(vpath: str) -> str:
     if vpath.startswith("\\\\?\\"):
         vpath = "\\\\.\\" + vpath[4:]
     return vpath.rstrip("\\")
+
+
+def _disk_info(disk: dict) -> dict:
+    """What the drive panel shows under General (Get-Disk's own words; empty ones left out)."""
+    info = {"model": disk.get("model"), "serial": disk.get("serial"), "vendor": disk.get("vendor"),
+            "firmware": disk.get("fw"), "style": disk.get("style"), "partitions": disk.get("parts")}
+    return {k: v for k, v in info.items() if v not in (None, "", "Unknown")}
 
 
 def _windows_drives() -> list[Drive]:
@@ -123,7 +133,7 @@ def _windows_drives() -> list[Drive]:
             bus=bus, media=media.get(str(p["disk"]), ""),
             removable=bus in ("USB", "SD", "MMC"), system=bool(disk.get("system") or disk.get("boot")),
             partition=p["num"], disk_size=int(disk.get("size") or 0),
-            disk_offset=int(p.get("offset") or 0),
+            disk_offset=int(p.get("offset") or 0), disk_info=_disk_info(disk),
         ))
     # A disk with nothing usable in its table -- never set up, or its partition table is gone -- is the
     # classic "my drive doesn't show up": list the whole disk so it can be scanned or searched.
@@ -137,7 +147,7 @@ def _windows_drives() -> list[Drive]:
             id=f"d{n}", kind="disk", path=f"\\\\.\\PhysicalDrive{n}", offset=0, size=size, label="",
             letter="", filesystem="unknown", free=0, disk=n, disk_name=disk.get("name", ""), bus=bus,
             media=media.get(str(n), ""), removable=bus in ("USB", "SD", "MMC"),
-            system=bool(disk.get("system") or disk.get("boot")), disk_size=size,
+            system=bool(disk.get("system") or disk.get("boot")), disk_size=size, disk_info=_disk_info(disk),
         ))
     drives.sort(key=lambda d: (not d.removable, d.system, d.disk, d.partition))
     return drives

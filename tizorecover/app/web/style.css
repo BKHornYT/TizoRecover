@@ -29,6 +29,7 @@
   --c-code: #4d7c0f;
   --c-program: #be185d;
   --c-other: #6b7280;
+  --c-encrypted: #0f766e;
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
   --radius: 8px;
   --row: 38px;
@@ -68,6 +69,7 @@
     --c-code: #a3e635;
     --c-program: #f9a8d4;
     --c-other: #a1a1aa;
+    --c-encrypted: #5eead4;
     --shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
     color-scheme: dark;
   }
@@ -104,6 +106,7 @@
   --c-code: #a3e635;
   --c-program: #f9a8d4;
   --c-other: #a1a1aa;
+  --c-encrypted: #5eead4;
   --shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }
@@ -355,9 +358,13 @@ button.chip { cursor: pointer; background: none; }
 .chances-legend h4 { margin: 0 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); }
 .chances-legend div { display: flex; flex-direction: column; gap: 2px; }
 .rv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; container-type: inline-size; }
+/* Like Disk Drill, every column stays; narrower lists cut the text instead (Type: "JPEG Im…"). */
 @container (max-width: 900px) {
   .tab-info { display: none; }
-  .thead, .row { grid-template-columns: 40px minmax(160px, 1fr) 110px 96px; }
+  .thead, .row { grid-template-columns: 40px minmax(150px, 1fr) 118px 136px 96px 74px; gap: 8px; }
+}
+@container (max-width: 620px) {
+  .thead, .row { grid-template-columns: 40px minmax(140px, 1fr) 110px 74px; }
   .thead > :nth-child(4), .row > :nth-child(4), .thead > :nth-child(5), .row > :nth-child(5) { display: none; }
 }
 .tabs { display: flex; align-items: center; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid var(--line); }
@@ -482,10 +489,10 @@ dialog.ql[open] { display: flex; outline: none; }
 .pv-hex .asc { color: var(--accent2); }
 .pv-note { padding: 28px 22px; color: var(--muted); text-align: center; display: grid; place-items: center; gap: 10px; }
 .pv-more { padding: 0 16px 16px; }
-.pv-info { margin: 0; padding: 14px 16px; display: grid; grid-template-columns: 96px 1fr; gap: 9px 12px; font-size: 13px; }
-.pv-info dt { color: var(--faint); }
-.pv-info dd { margin: 0; word-break: break-word; }
-.pv-info ul { margin: 0; padding-left: 16px; }
+.pv-dl { margin: 8px 0 0; display: grid; grid-template-columns: 76px 1fr; gap: 7px 10px; font-size: 12.5px; }
+.pv-dl dt { color: var(--faint); }
+.pv-dl dd { margin: 0; word-break: break-word; }
+.pv-dl ul { margin: 0; padding-left: 16px; }
 .pv-foot { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--line); }
 .pv-meta { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); }
 
@@ -871,3 +878,88 @@ body { font-size: 14px; }
 .nav-tw { width: 16px; display: inline-grid; place-items: center; flex: none; margin-right: -6px; }
 .nav-tw svg { width: 12px !important; height: 12px !important; transition: transform .12s; }
 .nav-tw.open svg { transform: rotate(90deg); }
+
+/* ---------- R7 G: Disk Drill round 2 (review) ---------- */
+/* chances as stars, neutral like theirs */
+.ch, .ch.good, .ch.partial, .ch.overwritten { color: var(--text); gap: 6px; }
+.ch .st { width: 15px; height: 15px; color: var(--muted); flex: none; }
+.tstar { position: absolute; top: 8px; right: 8px; z-index: 2; width: 20px; height: 20px; color: var(--muted); display: grid; place-items: center; }
+.tstar svg { width: 18px; height: 18px; }
+/* grid: square cards, name under them, folders as big yellow folders */
+.tile, .tile:hover { border: 0; background: none; overflow: visible; border-radius: 0; }
+.tile.current { box-shadow: none; }
+.tile .thumb { aspect-ratio: 1; border-radius: 8px; background: var(--surface2); border: 1px solid transparent; padding: 16%; }
+.tile:hover .thumb { background: var(--hover); }
+.tile.current .thumb { border-color: var(--accent); background: var(--accent-soft); }
+.tile .thumb img, .tile .thumb video { object-fit: contain; }
+.tile .check { top: 8px; left: 8px; }
+.tile .cap { justify-content: center; text-align: center; height: 40px; padding: 6px 2px 0; font-size: 12.5px; line-height: 1.3; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+.bigicon { width: 100%; height: 100%; display: grid; place-items: center; color: var(--cc, var(--muted)); }
+.tile .thumb .bigicon svg { width: 62%; height: 62%; stroke-width: 1.2; }
+.tile .thumb svg.bigfolder { width: 88%; height: auto; }
+/* grid header: tick-all, sort, size slider */
+.ghead { height: 40px; display: flex; align-items: center; gap: 6px; padding: 0 16px 0 8px; border-bottom: 1px solid var(--line); flex: none; }
+.ghead .c-check { width: 40px; }
+.gsort { border: 0; background: none; color: var(--text); font-weight: 600; cursor: pointer; padding: 4px 6px; border-radius: 6px; }
+.gsort:hover { background: var(--hover); }
+.ghead .pop-wrap .popover { left: 0; right: auto; width: 200px; }
+.sortpop { gap: 2px; padding: 6px; }
+#gzoom { width: 110px; accent-color: var(--accent); }
+/* breadcrumb under the grid */
+.crumbs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 12px; border-top: 1px solid var(--line); overflow: hidden; white-space: nowrap; }
+.crumbs button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; color: var(--text); cursor: pointer; padding: 3px 6px; border-radius: 6px; font-size: 13px; min-width: 0; }
+.crumbs button:hover { background: var(--hover); }
+.crumbs button span { overflow: hidden; text-overflow: ellipsis; }
+.crumbs svg { width: 16px; height: 16px; flex: none; }
+.crumbs .bigfolder { width: 18px; }
+.crumbs .sep { width: 12px; height: 12px; color: var(--faint); }
+/* right-click menu */
+.ctx { position: fixed; z-index: 200; min-width: 270px; padding: 5px; background: var(--surface); border: 1px solid var(--line2); border-radius: 9px; box-shadow: var(--shadow); }
+.ctx button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 12px; border: 0; background: none; color: var(--text); text-align: left; border-radius: 6px; cursor: pointer; font-size: 13.5px; }
+.ctx button:hover:not(:disabled) { background: var(--hover); }
+.ctx button:disabled { opacity: .42; cursor: default; }
+.ctx svg, .ctx .ci { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.ctx hr { border: 0; border-top: 1px solid var(--line); margin: 5px 4px; }
+/* preview pane: picture on top, then what it is */
+.pv-tools { display: flex; align-items: center; gap: 2px; padding: 6px 8px 0 12px; flex: none; }
+.pv-tools .link-btn { display: inline-flex; align-items: center; gap: 4px; }
+.pv-tools .link-btn svg { width: 14px; height: 14px; }
+.pv-body { min-height: 220px; }
+.pv-info { flex: none; max-height: 52%; overflow: auto; padding: 14px 18px 18px; }
+.pv-info .pv-name { font-size: 17px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal; }
+.pv-kind, .pv-date { color: var(--muted); font-size: 13px; margin-top: 4px; }
+.pv-info h5 { margin: 16px 0 3px; font-size: 13.5px; font-weight: 650; }
+.pv-info .pv-path { color: var(--muted); font-size: 12px; word-break: break-all; margin: 0; }
+.pv-more { margin-top: 14px; font-size: 12.5px; }
+.pv-more summary { cursor: pointer; color: var(--muted); }
+.preview.hexmode .pv-info { display: none; }
+/* filter popovers, Disk Drill's shapes */
+.chips .popover { left: 0; right: auto; width: 260px; gap: 10px; padding: 10px; }
+.chips .popover hr { border: 0; border-top: 1px solid var(--line); margin: 2px -10px; }
+.pop-list { display: flex; flex-direction: column; gap: 2px; }
+.pop-radio { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 7px; cursor: pointer; }
+.pop-radio:hover { background: var(--hover); }
+.pop-radio input { margin: 0; accent-color: var(--accent); width: 16px; height: 16px; }
+.pop-radio span:nth-of-type(1) { flex: 1; }
+.pop-radio .cnt { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--surface2); border: 1px solid var(--line); color: var(--muted); font-variant-numeric: tabular-nums; }
+.chips .popover .opt { padding: 5px 8px; align-items: center; gap: 10px; }
+.chips .popover .opt input { margin: 0; }
+.ch-opt svg { width: 17px; height: 17px; color: var(--muted); }
+.sz-in { display: flex; align-items: center; gap: 6px; padding: 2px 8px 8px 34px; }
+.sz-in input { width: 74px; height: 30px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line2); background: var(--surface2); color: var(--text); }
+.sz-in select, #dt-mode { height: 30px; border-radius: 6px; border: 1px solid var(--line2); background: var(--surface2); color: var(--text); padding: 0 6px; }
+#dt-mode { width: 100%; }
+.pop-btns { display: flex; gap: 8px; }
+.pop-btns .btn { flex: 1; justify-content: center; }
+.dt-item { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 8px; border: 0; background: none; color: var(--text); border-radius: 7px; cursor: pointer; text-align: left; }
+.dt-item:hover, .dt-item.sel { background: var(--hover); }
+.dt-item svg { width: 18px; height: 18px; color: var(--muted); margin-top: 2px; }
+.dt-item span { display: flex; flex-direction: column; }
+.dt-item small { color: var(--muted); font-size: 12px; }
+#dt-custom { display: flex; flex-direction: column; gap: 8px; }
+#dt-custom[hidden] { display: none; }
+#dt-custom label { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+#dt-custom input { height: 30px; border-radius: 6px; border: 1px solid var(--line2); background: var(--surface2); color: var(--text); padding: 0 6px; }
+.fchip .x { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 2px; }
+.fchip .x svg { width: 13px; height: 13px; }

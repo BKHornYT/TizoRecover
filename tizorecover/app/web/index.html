@@ -151,6 +151,10 @@
         <button class="icon-btn" id="rv-pause" title="Pause" hidden><span data-icon="pause"></span></button>
         <button class="tb-scan" id="rv-scanpill" data-goto="scan" hidden><b id="rv-pilltext"></b><small id="rv-pillsub"></small><span class="pill-bar"><span id="rv-pillbar"></span></span></button>
         <div class="grow"></div>
+        <div class="seg" id="layout-seg">
+          <button data-layout="files" title="Files only (no folders)"><span data-icon="file"></span></button>
+          <button data-layout="folders" class="active" title="Folders"><span data-icon="folder"></span></button>
+        </div>
         <div class="seg" id="view-seg">
           <button data-view="tree" class="active" title="List"><span data-icon="list"></span></button>
           <button data-view="grid" title="Thumbnails"><span data-icon="grid"></span></button>
@@ -165,16 +169,11 @@
         <div class="pop-wrap"><button class="fchip" id="chip-type"><span data-icon="image"></span><span class="fl">File type</span></button>
           <div class="popover" id="pop-type" hidden></div></div>
         <div class="pop-wrap"><button class="fchip" id="chip-size"><span data-icon="file"></span><span class="fl">File size</span></button>
-          <div class="popover" id="pop-size" hidden><div class="pop-sec"><h4>File size</h4><select id="f-size">
-            <option value="">Any size</option><option value="0-1048576">Under 1 MB</option>
-            <option value="1048576-104857600">1 MB – 100 MB</option><option value="104857600-1073741824">100 MB – 1 GB</option>
-            <option value="1073741824-">Over 1 GB</option></select></div></div></div>
+          <div class="popover" id="pop-size" hidden></div></div>
         <div class="pop-wrap"><button class="fchip" id="chip-date"><span data-icon="calendar"></span><span class="fl">Date modified</span></button>
-          <div class="popover" id="pop-date" hidden><div class="pop-sec"><h4>Date modified</h4><select id="f-date">
-            <option value="">Any time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option>
-            <option value="365">Last 12 months</option><option value="-365">More than a year ago</option><option value="none">Unknown date</option></select></div></div></div>
+          <div class="popover" id="pop-date" hidden></div></div>
         <div class="pop-wrap"><button class="fchip" id="chip-chances"><span data-icon="star"></span><span class="fl">Recovery chances</span></button>
-          <div class="popover" id="pop-chances" hidden><div class="pop-sec"><h4>Recovery chances</h4><div id="f-chances"></div></div></div></div>
+          <div class="popover" id="pop-chances" hidden></div></div>
         <div class="grow"></div>
         <button class="link-btn" id="f-reset" hidden>Reset all</button>
       </div>
@@ -192,33 +191,43 @@
             <div class="sortable" data-sort="type">Type</div>
             <div class="sortable num" data-sort="size">Size</div>
           </div>
+          <div class="ghead" id="ghead" hidden>
+            <div class="c-check"><input type="checkbox" class="check" id="gcheck-all" title="Select everything shown"></div>
+            <button class="gsort" id="gsort-btn"><span id="gsort-label">Name</span><span id="gsort-dir"></span></button>
+            <div class="pop-wrap"><button class="icon-btn" id="gsort-more" title="Sort by"><span data-icon="chevdown"></span></button>
+              <div class="popover sortpop" id="pop-gsort" hidden></div></div>
+            <div class="grow"></div>
+            <input type="range" id="gzoom" min="110" max="300" value="150" title="Thumbnail size">
+          </div>
           <div class="viewport" id="viewport"><div class="spacer" id="spacer"></div><div class="empty" id="empty" hidden></div></div>
+          <div class="crumbs" id="crumbs" hidden></div>
         </div>
       </div>
       <aside class="preview empty" id="preview">
-        <div class="pv-empty" id="pv-empty"><div class="pv-empty-art"></div><p>Select a file to preview it</p></div>
-        <div class="pv-head">
-          <div class="pv-titles"><div class="pv-name" id="pv-name"></div><div class="pv-path" id="pv-path"></div></div>
+        <div class="pv-empty" id="pv-empty"><div class="pv-empty-art"></div><p>Please select a file to preview</p></div>
+        <div class="pv-tools">
+          <button class="link-btn" id="pv-back" hidden><span data-icon="chevleft"></span>Back to the preview</button>
+          <div class="grow"></div>
           <button class="icon-btn" id="pv-wide" title="Larger preview"><span data-icon="expand"></span></button>
-          <button class="icon-btn" id="pv-close" title="Close preview"><span data-icon="x"></span></button>
-        </div>
-        <div class="pv-tabs" id="pv-tabs">
-          <button data-tab="preview" class="active">Preview</button>
-          <button data-tab="info">Details</button>
-          <button data-tab="hex">Hex</button>
+          <button class="icon-btn" id="pv-open" title="Open in Quick Look (Space)"><span data-icon="external"></span></button>
         </div>
         <div class="pv-body" id="pv-body"></div>
-        <div class="pv-foot"><div class="pv-meta" id="pv-meta"></div><button class="btn primary" id="pv-save"><span data-icon="download"></span>Recover</button></div>
+        <div class="pv-info" id="pv-info">
+          <div class="pv-name" id="pv-name"></div>
+          <div class="pv-kind" id="pv-kind"></div>
+          <div class="pv-date" id="pv-date"></div>
+          <h5>Path</h5><div class="pv-path" id="pv-path"></div>
+          <h5>Recovery chances</h5><div id="pv-chance"></div>
+          <details class="pv-more" id="pv-details"><summary>Details</summary><div id="pv-details-body"></div></details>
+        </div>
       </aside>
     </div>
 
     <footer class="actionbar">
       <div class="sel" id="sel-info"></div>
-      <button class="btn ghost sm" id="select-high">Select all with high chances</button>
-      <button class="btn ghost sm" id="select-none">Clear selection</button>
       <div class="grow"></div>
       <span class="sel-sum" id="sel-sum"></span>
-      <button class="btn primary" id="recover-btn">Recover all…</button>
+      <button class="btn primary" id="recover-btn">Recover</button>
     </footer>
   </section>
 
@@ -402,6 +411,8 @@
     <button class="btn primary" id="ql-save"><span data-icon="download"></span>Recover this file</button>
   </div>
 </dialog>
+
+<div class="ctx" id="ctx" hidden></div>
 
 <dialog id="confirm-dialog">
   <div class="dlg-head"><h2 id="cf-title"></h2><p id="cf-text"></p></div>

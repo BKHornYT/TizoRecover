@@ -46,9 +46,12 @@ CATEGORIES = {
                  "rtf", "txt", "md", "csv", "html", "htm", "xml", "json", "epub", "pages",
                  "key", "numbers", "log", "ini", "cfg", "yaml", "yml", "vsdx"},
     "archive": {"zip", "rar", "7z", "gz", "tgz", "tar", "bz2", "xz", "zst", "iso", "cab"},
-    "code": {"py", "js", "ts", "c", "h", "cpp", "cs", "java", "go", "rs", "php", "rb",
+    "code": {"py", "js", "c", "h", "cpp", "cs", "java", "go", "rs", "php", "rb",
              "sh", "ps1", "bat", "css", "lua", "kt", "swift", "sql"},
     "program": {"dex", "exe", "dll", "msi", "sys", "elf", "apk", "jar", "so"},
+    # Keys, password vaults and encrypted containers (Disk Drill's "Encrypted").
+    "encrypted": {"p7m", "p8", "p12", "pfx", "pem", "kdbx", "kdb", "gpg", "pgp", "asc", "aes", "axx", "hc", "tc",
+                  "jks", "keystore", "1pif", "opvault"},
 }
 EXT_CATEGORY = {ext: cat for cat, exts in CATEGORIES.items() for ext in exts}
 
